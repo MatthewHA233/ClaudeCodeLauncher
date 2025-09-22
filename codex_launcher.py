@@ -180,6 +180,24 @@ class CodexLauncher:
                 elif "返回" in option:
                     color = Fore.YELLOW
                     icon = "↩️"
+                elif "整理git提交" in option:
+                    color = Fore.MAGENTA
+                    icon = "🔗"
+                elif "查看已有材料" in option:
+                    color = Fore.CYAN
+                    icon = "📄"
+                elif "重新整理材料" in option:
+                    color = Fore.YELLOW
+                    icon = "🔄"
+                elif "使用 Claude 分析" in option:
+                    color = Fore.BLUE
+                    icon = "🤖"
+                elif "使用 Codex 分析" in option:
+                    color = Fore.GREEN
+                    icon = "🤖"
+                elif "取消" in option:
+                    color = Fore.RED
+                    icon = "❌"
                 else:
                     color = Fore.GREEN
                     icon = "📁"
@@ -680,7 +698,7 @@ class CodexLauncher:
                 "进入最近会话 (codex resume --last)",
                 "开始新会话 (codex)",
                 "选择历史会话 (codex resume)",
-                "🔗 整理git提交作为学习材料",
+                "整理git提交作为学习材料",
                 "返回主菜单"
             ]
 

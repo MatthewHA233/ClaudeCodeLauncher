@@ -756,7 +756,7 @@ Git Diff详情：
                     commit_info = commits[actual_index]
                     if self.is_commit_processed(path, commit_info['hash']):
                         # 绿色行（有记录），询问是否查看或重新处理
-                        options = ["📄 查看已有材料", "🔄 重新整理材料", "取消"]
+                        options = ["查看已有材料", "重新整理材料", "取消"]
                         choice = self.launcher.select_from_menu(options, f"✅ {commit_info['short_hash']} 已有学习材料")
                         if choice == 0:
                             self.view_existing_context(path, commit_info)
