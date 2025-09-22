@@ -9,6 +9,7 @@ import sys
 import time
 import random
 from colorama import init, Fore, Back, Style
+from git_commit_organizer import GitCommitOrganizer
 
 init(autoreset=True)
 
@@ -21,6 +22,7 @@ class CodexLauncher:
         self.frame_index = 0
         self.current_page = 0
         self.paths_per_page = 5
+        self.git_organizer = GitCommitOrganizer(self)
 
     def get_display_width(self, text):
         """计算字符串的实际显示宽度"""
@@ -678,6 +680,7 @@ class CodexLauncher:
                 "进入最近会话 (codex resume --last)",
                 "开始新会话 (codex)",
                 "选择历史会话 (codex resume)",
+                "🔗 整理git提交作为学习材料",
                 "返回主菜单"
             ]
 
@@ -687,7 +690,7 @@ class CodexLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 3:  # ESC或返回主菜单
+            if choice == -1 or choice == 4:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_codex_command(path, "codex resume --last")
@@ -695,6 +698,8 @@ class CodexLauncher:
                 self.execute_codex_command(path, "codex")
             elif choice == 2:
                 self.execute_codex_command(path, "codex resume")
+            elif choice == 3:
+                self.git_organizer.run_commit_organizer(path)
 
 
     def get_all_paths(self):
