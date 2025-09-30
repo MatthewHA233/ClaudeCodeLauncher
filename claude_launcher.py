@@ -174,7 +174,7 @@ class ClaudeLauncher:
                 elif "claude -c" in option:
                     color = Fore.CYAN
                     icon = "⚡"
-                elif "claude --resume" in option:
+                elif "claude --resume" in option or "Web图形化" in option:
                     color = Fore.BLUE
                     icon = "📋"
                 elif "(claude)" in option:
@@ -736,7 +736,8 @@ class ClaudeLauncher:
     def handle_path_selection(self, path):
         """处理路径选择后的操作"""
         while True:
-            resume_mode_text = "Web图形化" if self.config.get("resume_mode", "cli") == "web" else "claude --resume"
+            resume_mode = self.config.get("resume_mode", "cli")
+            resume_mode_text = "Web图形化" if resume_mode == "web" else "claude --resume"
             options = [
                 "进入最近会话 (claude -c)",
                 "开始新会话 (claude)",
