@@ -131,6 +131,36 @@ class ConversationViewer:
         else:
             return f"{size_bytes / (1024 * 1024):.1f} MB"
 
+    def show_sessions_with_resume(self, project_path):
+        """显示Web会话选择界面，支持继续对话"""
+        show_conversation_web(project_path, self)
+
+        # 等待用户选择会话并关闭服务器
+        resume_file = Path.home() / '.claude_launcher_resume.json'
+
+        # 等待文件出现（最多等待60秒）
+        import time
+        for _ in range(60):
+            if resume_file.exists():
+                try:
+                    with open(resume_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    session_id = data.get('session_id')
+                    project_path = data.get('project_path')
+
+                    # 删除临时文件
+                    resume_file.unlink()
+
+                    if session_id and project_path:
+                        # 启动对话
+                        os.chdir(project_path)
+                        self.launcher.execute_claude_command(project_path, f"claude --session-id {session_id}")
+                    break
+                except Exception as e:
+                    print(f"读取会话ID失败: {e}")
+                    break
+            time.sleep(1)
+
     def show_sessions_menu(self, project_path):
         """显示会话列表Web界面"""
         show_conversation_web(project_path, self)

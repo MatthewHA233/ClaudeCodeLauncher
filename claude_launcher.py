@@ -58,7 +58,8 @@ class ClaudeLauncher:
             "recent_paths": [],
             "all_paths": [],
             "use_proxy": True,  # 默认开启代理
-            "clash_path": r"D:\Program Files\Clash Verge\clash-verge.exe"  # 默认Clash路径
+            "clash_path": r"D:\Program Files\Clash Verge\clash-verge.exe",  # 默认Clash路径
+            "resume_mode": "cli"  # 历史会话选择模式: "cli" 或 "web"
         }
     
     def save_config(self):
@@ -597,19 +598,24 @@ class ClaudeLauncher:
             
             proxy_status = "开启" if self.config.get("use_proxy", True) else "关闭"
             proxy_color = Fore.GREEN if self.config.get("use_proxy", True) else Fore.RED
-            
+
             clash_path = self.config.get("clash_path", r"D:\Program Files\Clash Verge\clash-verge.exe")
             proxy_name = os.path.basename(clash_path).replace(".exe", "")
-            
+
+            resume_mode = self.config.get("resume_mode", "cli")
+            resume_mode_text = "Web图形化" if resume_mode == "web" else "命令行(CLI)"
+            resume_mode_color = Fore.CYAN if resume_mode == "web" else Fore.YELLOW
+
             options = [
                 f"代理功能: {proxy_color}{proxy_status}{Style.RESET_ALL}",
                 f"代理软件: {Fore.CYAN}{proxy_name}{Style.RESET_ALL}",
+                f"历史会话选择模式: {resume_mode_color}{resume_mode_text}{Style.RESET_ALL}",
                 "返回主菜单"
             ]
-            
+
             choice = self.select_from_menu(options, "⚙️ 设置")
-            
-            if choice == -1 or choice == 2:  # ESC或返回
+
+            if choice == -1 or choice == 3:  # ESC或返回
                 break
             elif choice == 0:  # 切换代理设置
                 self.config["use_proxy"] = not self.config.get("use_proxy", True)
@@ -620,6 +626,13 @@ class ClaudeLauncher:
                 time.sleep(1)
             elif choice == 1:  # 设置代理软件路径
                 self.set_proxy_path()
+            elif choice == 2:  # 切换历史会话选择模式
+                self.config["resume_mode"] = "web" if self.config.get("resume_mode", "cli") == "cli" else "cli"
+                self.save_config()
+                new_mode_text = "Web图形化" if self.config["resume_mode"] == "web" else "命令行(CLI)"
+                new_mode_color = Fore.CYAN if self.config["resume_mode"] == "web" else Fore.YELLOW
+                print(f"\n{Fore.CYAN}历史会话选择模式已切换为: {new_mode_color}{new_mode_text}{Style.RESET_ALL}")
+                time.sleep(1)
     
     def set_proxy_path(self):
         """设置代理软件路径"""
@@ -723,12 +736,12 @@ class ClaudeLauncher:
     def handle_path_selection(self, path):
         """处理路径选择后的操作"""
         while True:
+            resume_mode_text = "Web图形化" if self.config.get("resume_mode", "cli") == "web" else "claude --resume"
             options = [
                 "进入最近会话 (claude -c)",
                 "开始新会话 (claude)",
-                "选择历史会话 (claude --resume)",
+                f"选择历史会话 ({resume_mode_text})",
                 "整理git提交作为学习材料",
-                "查看对话历史记录",
                 "返回主菜单"
             ]
 
@@ -738,18 +751,20 @@ class ClaudeLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 5:  # ESC或返回主菜单
+            if choice == -1 or choice == 4:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_claude_command(path, "claude -c")
             elif choice == 1:
                 self.execute_claude_command(path, "claude")
             elif choice == 2:
-                self.execute_claude_command(path, "claude --resume")
+                # 根据配置选择历史会话模式
+                if self.config.get("resume_mode", "cli") == "web":
+                    self.conversation_viewer.show_sessions_with_resume(path)
+                else:
+                    self.execute_claude_command(path, "claude --resume")
             elif choice == 3:
                 self.git_organizer.run_commit_organizer(path)
-            elif choice == 4:
-                self.conversation_viewer.show_sessions_menu(path)
     
     def get_all_paths(self):
         """获取所有路径，最近使用的在前"""

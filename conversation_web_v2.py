@@ -457,6 +457,30 @@ class ConversationWebServerV2:
             gap: 4px;
         }
 
+        .session-resume-btn {
+            margin-top: 8px;
+            padding: 6px 12px;
+            background: linear-gradient(135deg, var(--primary-blue) 0%, #0099cc 100%);
+            color: var(--bg-dark);
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            width: 100%;
+            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
+        }
+
+        .session-resume-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.5);
+        }
+
+        .session-resume-btn:active {
+            transform: translateY(0);
+        }
+
         .session-time-row {
             display: flex;
             align-items: center;
@@ -1317,6 +1341,7 @@ class ConversationWebServerV2:
                         `;
                     }
 
+                    const sessionId = session.session_id;
                     item.innerHTML = `
                         <div class="session-time-row">
                             <div class="session-time">${timeOnly}</div>
@@ -1326,8 +1351,13 @@ class ConversationWebServerV2:
                             <span>💬</span>
                             <span>${session.message_count} 条对话</span>
                         </div>
+                        <button class="session-resume-btn" onclick="resumeSession('${sessionId}', event)">🚀 继续该对话</button>
                     `;
-                    item.onclick = () => loadConversation(index, item);
+                    item.onclick = (e) => {
+                        if (!e.target.classList.contains('session-resume-btn')) {
+                            loadConversation(index, item);
+                        }
+                    };
                     dateGroup.appendChild(item);
 
                     // 为git徽章创建tooltip并添加到body
@@ -1825,6 +1855,34 @@ class ConversationWebServerV2:
                 });
         }
 
+        function resumeSession(sessionId, event) {
+            event.stopPropagation();
+
+            // 调用API继续会话
+            fetch('/api/resume-session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ session_id: sessionId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('正在启动会话...');
+                    // 等待1秒后关闭窗口
+                    setTimeout(() => {
+                        window.close();
+                    }, 1000);
+                } else {
+                    showNotification('启动失败: ' + data.error);
+                }
+            })
+            .catch(error => {
+                showNotification('启动失败: ' + error.message);
+            });
+        }
+
         function updateOutline(session) {
             const outlineEl = document.getElementById('outline-content');
 
@@ -1964,6 +2022,7 @@ class ConversationWebServerV2:
             messages = self.parse_conversation_properly(session['file_path'])
 
             sessions_data.append({
+                'session_id': session['id'],
                 'last_time': self.conversation_viewer.format_timestamp(session['last_time']),
                 'message_count': len(messages),
                 'file_size': self.conversation_viewer.format_file_size(session['file_size']),
@@ -2201,6 +2260,45 @@ class ConversationWebServerV2:
                         response = json.dumps({'success': False, 'error': str(e)})
                         self.wfile.write(response.encode('utf-8'))
 
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_POST(self):
+                if self.path == '/api/resume-session':
+                    try:
+                        # 读取POST数据
+                        content_length = int(self.headers['Content-Length'])
+                        post_data = self.rfile.read(content_length)
+                        data = json.loads(post_data.decode('utf-8'))
+
+                        session_id = data.get('session_id')
+                        if not session_id:
+                            raise ValueError('缺少session_id参数')
+
+                        # 保存会话ID到文件，供主进程读取
+                        resume_file = Path.home() / '.claude_launcher_resume.json'
+                        with open(resume_file, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                'session_id': session_id,
+                                'project_path': server_instance.project_path
+                            }, f)
+
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json; charset=utf-8')
+                        self.end_headers()
+                        response = json.dumps({'success': True})
+                        self.wfile.write(response.encode('utf-8'))
+
+                        # 关闭服务器
+                        threading.Thread(target=server_instance.server.shutdown).start()
+
+                    except Exception as e:
+                        self.send_response(500)
+                        self.send_header('Content-type', 'application/json; charset=utf-8')
+                        self.end_headers()
+                        response = json.dumps({'success': False, 'error': str(e)})
+                        self.wfile.write(response.encode('utf-8'))
                 else:
                     self.send_response(404)
                     self.end_headers()
