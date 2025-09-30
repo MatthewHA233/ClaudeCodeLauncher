@@ -10,6 +10,7 @@ import time
 import random
 from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
+from conversation_viewer import ConversationViewer
 
 init(autoreset=True)
 
@@ -23,6 +24,7 @@ class ClaudeLauncher:
         self.current_page = 0
         self.paths_per_page = 5
         self.git_organizer = GitCommitOrganizer(self)
+        self.conversation_viewer = ConversationViewer(self)
     
     def get_display_width(self, text):
         """计算字符串的实际显示宽度"""
@@ -195,6 +197,9 @@ class ClaudeLauncher:
                 elif "使用 Codex 分析" in option:
                     color = Fore.GREEN
                     icon = "🤖"
+                elif "查看对话历史记录" in option:
+                    color = Fore.CYAN
+                    icon = "📜"
                 elif "取消" in option:
                     color = Fore.RED
                     icon = "❌"
@@ -723,6 +728,7 @@ class ClaudeLauncher:
                 "开始新会话 (claude)",
                 "选择历史会话 (claude --resume)",
                 "整理git提交作为学习材料",
+                "查看对话历史记录",
                 "返回主菜单"
             ]
 
@@ -732,7 +738,7 @@ class ClaudeLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 4:  # ESC或返回主菜单
+            if choice == -1 or choice == 5:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_claude_command(path, "claude -c")
@@ -742,6 +748,8 @@ class ClaudeLauncher:
                 self.execute_claude_command(path, "claude --resume")
             elif choice == 3:
                 self.git_organizer.run_commit_organizer(path)
+            elif choice == 4:
+                self.conversation_viewer.show_sessions_menu(path)
     
     def get_all_paths(self):
         """获取所有路径，最近使用的在前"""
