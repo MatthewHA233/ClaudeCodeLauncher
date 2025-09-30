@@ -20,8 +20,8 @@ class ConversationViewer:
         # 提取路径中的ASCII关键词（去除中文和特殊字符）
         ascii_keywords = []
         for part in project_path.replace("\\", "/").split("/"):
-            # 提取每个部分的ASCII字符（保留下划线，因为会被转成横杠）
-            ascii_part = ''.join(c for c in part if 32 <= ord(c) < 127 and (c.isalnum() or c == '_'))
+            # 提取每个部分的ASCII字符（保留下划线和横杠）
+            ascii_part = ''.join(c for c in part if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
             if ascii_part:
                 # 将下划线替换为横杠，以匹配目录名
                 ascii_keywords.append(ascii_part.replace('_', '-').lower())
