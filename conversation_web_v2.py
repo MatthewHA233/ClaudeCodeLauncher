@@ -10,6 +10,7 @@ import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.parse
+import subprocess
 
 class ConversationWebServerV2:
     def __init__(self, project_path, conversation_viewer):
@@ -18,6 +19,7 @@ class ConversationWebServerV2:
         self.sessions = []
         self.server = None
         self.server_thread = None
+        self.launcher = conversation_viewer.launcher
 
     def generate_html(self):
         """生成HTML页面"""
@@ -458,27 +460,35 @@ class ConversationWebServerV2:
         }
 
         .session-resume-btn {
-            margin-top: 8px;
-            padding: 6px 12px;
+            width: 18px;
+            height: 18px;
             background: linear-gradient(135deg, var(--primary-blue) 0%, #0099cc 100%);
             color: var(--bg-dark);
             border: none;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: 600;
+            border-radius: 50%;
+            font-size: 10px;
             cursor: pointer;
             transition: var(--transition);
-            width: 100%;
-            box-shadow: 0 2px 8px rgba(0, 212, 255, 0.3);
+            box-shadow: 0 2px 6px rgba(0, 212, 255, 0.3);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            padding: 0;
+            margin-left: 8px;
+        }
+
+        .session-item:hover .session-resume-btn {
+            opacity: 1;
         }
 
         .session-resume-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.5);
+            transform: scale(1.2);
+            box-shadow: 0 3px 10px rgba(0, 212, 255, 0.6);
         }
 
         .session-resume-btn:active {
-            transform: translateY(0);
+            transform: scale(0.9);
         }
 
         .session-time-row {
@@ -1345,13 +1355,13 @@ class ConversationWebServerV2:
                     item.innerHTML = `
                         <div class="session-time-row">
                             <div class="session-time">${timeOnly}</div>
+                            <button class="session-resume-btn" onclick="resumeSession('${sessionId}', event)" title="继续该对话">▶</button>
                             ${gitBadgeHtml}
                         </div>
                         <div class="session-meta">
                             <span>💬</span>
                             <span>${session.message_count} 条对话</span>
                         </div>
-                        <button class="session-resume-btn" onclick="resumeSession('${sessionId}', event)">🚀 继续该对话</button>
                     `;
                     item.onclick = (e) => {
                         if (!e.target.classList.contains('session-resume-btn')) {
@@ -1869,17 +1879,13 @@ class ConversationWebServerV2:
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showNotification('正在启动会话...');
-                    // 等待1秒后关闭窗口
-                    setTimeout(() => {
-                        window.close();
-                    }, 1000);
+                    showNotification('✅ 已在新窗口启动会话！');
                 } else {
-                    showNotification('启动失败: ' + data.error);
+                    showNotification('❌ 启动失败: ' + data.error);
                 }
             })
             .catch(error => {
-                showNotification('启动失败: ' + error.message);
+                showNotification('❌ 启动失败: ' + error.message);
             });
         }
 
@@ -2276,22 +2282,32 @@ class ConversationWebServerV2:
                         if not session_id:
                             raise ValueError('缺少session_id参数')
 
-                        # 保存会话ID到文件，供主进程读取
-                        resume_file = Path.home() / '.claude_launcher_resume.json'
-                        with open(resume_file, 'w', encoding='utf-8') as f:
-                            json.dump({
-                                'session_id': session_id,
-                                'project_path': server_instance.project_path
-                            }, f)
+                        # 直接在新窗口启动 claude，支持代理设置
+                        project_path = server_instance.project_path
+                        launcher = server_instance.launcher
+
+                        # 构建命令
+                        drive = project_path[0] + ":"
+                        cmd_parts = [drive, f'cd /d "{project_path}"']
+
+                        # 根据配置添加代理设置
+                        if launcher.config.get("use_proxy", True):
+                            proxy_url = launcher.proxy_url
+                            cmd_parts.extend([
+                                f'set https_proxy={proxy_url}',
+                                f'set http_proxy={proxy_url}'
+                            ])
+
+                        cmd_parts.append(f'claude -r "{session_id}"')
+                        full_command = ' && '.join(cmd_parts)
+
+                        subprocess.Popen(f'start cmd /k "{full_command}"', shell=True)
 
                         self.send_response(200)
                         self.send_header('Content-type', 'application/json; charset=utf-8')
                         self.end_headers()
                         response = json.dumps({'success': True})
                         self.wfile.write(response.encode('utf-8'))
-
-                        # 关闭服务器
-                        threading.Thread(target=server_instance.server.shutdown).start()
 
                     except Exception as e:
                         self.send_response(500)
