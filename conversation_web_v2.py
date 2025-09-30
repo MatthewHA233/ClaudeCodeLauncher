@@ -1330,9 +1330,181 @@ class ConversationWebServerV2:
         function copyMessage(btn, event) {
             event.stopPropagation();
             const bubble = btn.closest('.message-bubble');
-            const text = bubble.querySelector('.message-text').textContent;
-            copyToClipboard(text);
+
+            // 提取文本内容
+            let content = '';
+            const textEl = bubble.querySelector('.message-text');
+            if (textEl) {
+                content = textEl.textContent;
+            }
+
+            // 提取工具调用信息
+            const toolSection = bubble.querySelector('.tool-section');
+            if (toolSection) {
+                const tools = toolSection.querySelectorAll('.tool-item');
+                if (tools.length > 0) {
+                    content += '\\n\\n--- 工具调用 ---\\n';
+
+                    tools.forEach((tool, index) => {
+                        const toolName = tool.querySelector('.tool-name').textContent;
+                        content += '\\n[' + toolName + ']\\n';
+
+                        // 根据工具类型提取内容
+                        const formattedContent = formatToolForCopy(tool, toolName);
+                        content += formattedContent;
+                    });
+                }
+            }
+
+            copyToClipboard(content);
             showNotification('已复制消息内容');
+        }
+
+        function formatToolForCopy(toolEl, toolName) {
+            let content = '';
+            const detailsEl = toolEl.querySelector('.tool-details-content');
+            if (!detailsEl) return content;
+
+            // 提取参数
+            const params = {};
+            const paramEls = detailsEl.querySelectorAll('.tool-param');
+            paramEls.forEach(paramEl => {
+                const key = paramEl.querySelector('.tool-param-key');
+                const value = paramEl.querySelector('.tool-param-value');
+                if (key && value) {
+                    const keyText = key.textContent.replace(':', '').trim();
+                    params[keyText] = value.textContent.trim();
+                }
+            });
+
+            // 根据工具类型格式化
+            if (toolName === 'Edit') {
+                // Edit工具：提取diff
+                if (params.file_path) {
+                    content += '文件: ' + params.file_path + '\\n\\n';
+                }
+                const diffView = detailsEl.querySelector('.diff-view');
+                if (diffView) {
+                    const fileExt = getFileExtension(params.file_path);
+                    content += '```' + fileExt + '\\n';
+                    const diffLines = diffView.querySelectorAll('.diff-line');
+                    diffLines.forEach(line => {
+                        const lineText = line.textContent;
+                        if (line.classList.contains('diff-line-add')) {
+                            content += '+ ' + lineText + '\\n';
+                        } else if (line.classList.contains('diff-line-remove')) {
+                            content += '- ' + lineText + '\\n';
+                        } else {
+                            content += '  ' + lineText + '\\n';
+                        }
+                    });
+                    content += '```\\n';
+                }
+            } else if (toolName === 'Bash') {
+                // Bash工具：命令和结果
+                if (params.command) {
+                    content += '```bash\\n' + params.command + '\\n```\\n';
+                }
+                if (params.description) {
+                    content += '说明: ' + params.description + '\\n';
+                }
+            } else if (toolName === 'Read') {
+                // Read工具：文件路径和内容
+                if (params.file_path) {
+                    content += '文件: ' + params.file_path + '\\n';
+                }
+            } else if (toolName === 'Write') {
+                // Write工具：文件路径和内容
+                if (params.file_path) {
+                    content += '文件: ' + params.file_path + '\\n\\n';
+                }
+                if (params.content) {
+                    const fileExt = getFileExtension(params.file_path);
+                    content += '```' + fileExt + '\\n';
+                    content += params.content;
+                    content += '\\n```\\n';
+                }
+            } else if (toolName === 'Glob' || toolName === 'Grep') {
+                // 搜索工具：模式和路径
+                if (params.pattern) {
+                    content += '模式: ' + params.pattern + '\\n';
+                }
+                if (params.path) {
+                    content += '路径: ' + params.path + '\\n';
+                }
+            } else {
+                // 其他工具：列出所有参数
+                for (const [key, value] of Object.entries(params)) {
+                    content += key + ': ' + value + '\\n';
+                }
+            }
+
+            // 提取工具结果
+            const resultEl = detailsEl.querySelector('.tool-result');
+            if (resultEl) {
+                const isError = resultEl.classList.contains('tool-result-error');
+                const resultContent = resultEl.querySelector('.tool-result-content');
+                if (resultContent) {
+                    const statusText = isError ? '执行失败' : '执行结果';
+                    content += '\\n' + statusText + ':\\n';
+                    const resultText = resultContent.textContent.trim();
+
+                    // 如果是代码结果，添加代码块
+                    if (toolName === 'Read' && params.file_path) {
+                        const fileExt = getFileExtension(params.file_path);
+                        content += '```' + fileExt + '\\n';
+                        content += resultText + '\\n';
+                        content += '```\\n';
+                    } else if (toolName === 'Bash') {
+                        content += '```\\n' + resultText + '\\n```\\n';
+                    } else {
+                        content += resultText + '\\n';
+                    }
+                }
+            }
+
+            return content;
+        }
+
+        function getFileExtension(filePath) {
+            if (!filePath) return '';
+            const parts = filePath.split('.');
+            if (parts.length < 2) return '';
+            const ext = parts[parts.length - 1].toLowerCase();
+
+            // 映射常见扩展名
+            const extMap = {
+                'js': 'javascript',
+                'ts': 'typescript',
+                'jsx': 'jsx',
+                'tsx': 'tsx',
+                'py': 'python',
+                'rb': 'ruby',
+                'java': 'java',
+                'cpp': 'cpp',
+                'c': 'c',
+                'cs': 'csharp',
+                'go': 'go',
+                'rs': 'rust',
+                'php': 'php',
+                'html': 'html',
+                'css': 'css',
+                'scss': 'scss',
+                'json': 'json',
+                'xml': 'xml',
+                'yaml': 'yaml',
+                'yml': 'yaml',
+                'md': 'markdown',
+                'sh': 'bash',
+                'bash': 'bash',
+                'sql': 'sql',
+                'swift': 'swift',
+                'kt': 'kotlin',
+                'r': 'r',
+                'scala': 'scala'
+            };
+
+            return extMap[ext] || ext;
         }
 
         function copyAllConversation() {
