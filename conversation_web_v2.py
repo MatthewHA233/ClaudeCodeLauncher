@@ -7,12 +7,17 @@ import webbrowser
 from pathlib import Path
 import difflib
 import base64
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+import urllib.parse
 
 class ConversationWebServerV2:
     def __init__(self, project_path, conversation_viewer):
         self.project_path = project_path
         self.conversation_viewer = conversation_viewer
         self.sessions = []
+        self.server = None
+        self.server_thread = None
 
     def generate_html(self):
         """生成HTML页面"""
@@ -74,17 +79,233 @@ class ConversationWebServerV2:
             border: 1px solid var(--border-color);
         }
 
-        /* 侧边栏 */
+        /* 左侧边栏 */
         .sidebar {
-            width: 320px;
-            min-width: 320px;
-            max-width: 320px;
+            width: 192px;
+            min-width: 192px;
+            max-width: 192px;
             flex-shrink: 0;
             background: var(--bg-dark-secondary);
             border-right: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             transition: var(--transition);
+            position: relative;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+            max-width: 0;
+            overflow: hidden;
+            border-right: none;
+        }
+
+        /* 右侧边栏 */
+        .outline-sidebar {
+            width: 250px;
+            min-width: 250px;
+            max-width: 250px;
+            flex-shrink: 0;
+            background: var(--bg-dark-secondary);
+            border-left: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: var(--transition);
+            position: relative;
+        }
+
+        .outline-sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+            max-width: 0;
+            overflow: hidden;
+            border-left: none;
+        }
+
+        /* 现代化切换按钮 - 融入式设计 */
+        .sidebar-toggle-btn, .outline-toggle-btn {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 32px;
+            height: 64px;
+            background: rgba(26, 31, 58, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition);
+            z-index: 50;
+            font-size: 14px;
+            opacity: 0.3;
+        }
+
+        .sidebar-toggle-btn {
+            left: 0;
+            border-left: none;
+            border-radius: 0 8px 8px 0;
+            color: var(--primary-blue);
+        }
+
+        .outline-toggle-btn {
+            right: 0;
+            border-right: none;
+            border-radius: 8px 0 0 8px;
+            color: var(--primary-orange);
+        }
+
+        .sidebar-toggle-btn:hover, .outline-toggle-btn:hover {
+            opacity: 1;
+            width: 36px;
+        }
+
+        .sidebar-toggle-btn:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: rgba(0, 212, 255, 0.3);
+        }
+
+        .outline-toggle-btn:hover {
+            background: rgba(255, 107, 53, 0.1);
+            border-color: rgba(255, 107, 53, 0.3);
+        }
+
+        .sidebar-toggle-btn.active {
+            opacity: 1;
+            background: rgba(0, 212, 255, 0.15);
+            border-color: rgba(0, 212, 255, 0.4);
+        }
+
+        .outline-toggle-btn.active {
+            opacity: 1;
+            background: rgba(255, 107, 53, 0.15);
+            border-color: rgba(255, 107, 53, 0.4);
+        }
+
+        /* 刷新按钮 */
+        .refresh-btn {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 48px;
+            height: 48px;
+            background: rgba(26, 31, 58, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: var(--transition);
+            z-index: 100;
+            font-size: 20px;
+            opacity: 0.3;
+            color: var(--primary-blue);
+        }
+
+        .refresh-btn:hover {
+            opacity: 1;
+            background: rgba(0, 212, 255, 0.15);
+            border-color: rgba(0, 212, 255, 0.3);
+            transform: translateX(-50%) scale(1.1);
+        }
+
+        .refresh-btn:active {
+            transform: translateX(-50%) scale(0.95);
+        }
+
+        .refresh-btn.spinning {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: translateX(-50%) rotate(0deg); }
+            to { transform: translateX(-50%) rotate(360deg); }
+        }
+
+        .outline-header {
+            padding: 20px 16px;
+            background: linear-gradient(135deg, #0a0e27 0%, var(--bg-card) 100%);
+            border-bottom: 2px solid var(--primary-orange);
+        }
+
+        .outline-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .outline-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 12px;
+        }
+
+        .outline-item {
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: var(--transition);
+            border-left: 3px solid transparent;
+            background: rgba(26, 31, 58, 0.5);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .outline-item-time {
+            font-size: 10px;
+            color: var(--text-dim);
+            font-weight: 500;
+            margin-bottom: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            letter-spacing: 0.5px;
+        }
+
+        .outline-item-text {
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.5;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .outline-item:hover {
+            background: var(--bg-card);
+            border-left-color: var(--primary-orange);
+            transform: translateX(2px);
+        }
+
+        .outline-item:hover .outline-item-text {
+            color: var(--text-primary);
+        }
+
+        .outline-item.active {
+            background: rgba(255, 107, 53, 0.15);
+            border-left-color: var(--primary-orange);
+            box-shadow: 0 0 15px rgba(255, 107, 53, 0.2);
+        }
+
+        .outline-item.active .outline-item-text {
+            color: var(--primary-orange);
+            font-weight: 500;
+        }
+
+        .outline-item.active .outline-item-time {
+            color: var(--primary-orange);
+        }
+
+        .outline-empty {
+            padding: 40px 20px;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 13px;
         }
 
         .sidebar-header {
@@ -130,14 +351,28 @@ class ConversationWebServerV2:
         .session-list {
             flex: 1;
             overflow-y: auto;
-            padding: 16px;
+            padding: 16px 12px;
+        }
+
+        .date-group {
+            margin-bottom: 24px;
+        }
+
+        .date-header {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--primary-blue);
+            margin-bottom: 12px;
+            padding-left: 4px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
         }
 
         .session-item {
             background: var(--bg-card);
-            border-radius: var(--radius-md);
-            padding: 16px;
-            margin-bottom: 12px;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
             cursor: pointer;
             transition: var(--transition);
             border: 1px solid var(--border-color);
@@ -180,37 +415,19 @@ class ConversationWebServerV2:
             transform: scaleY(1);
         }
 
-        .session-title {
-            font-size: 16px;
+        .session-time {
+            font-size: 14px;
             font-weight: 600;
             color: var(--text-primary);
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .session-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            background: linear-gradient(135deg, var(--primary-blue) 0%, #0099cc 100%);
-            color: var(--bg-dark);
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 700;
-            box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
+            margin-bottom: 6px;
         }
 
         .session-meta {
-            font-size: 12px;
+            font-size: 13px;
             color: var(--text-secondary);
-            line-height: 1.8;
-        }
-
-        .session-meta-item {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
         }
 
         /* 主内容区 */
@@ -333,7 +550,7 @@ class ConversationWebServerV2:
         .message-wrapper {
             display: flex;
             gap: 14px;
-            max-width: 75%;
+            max-width: 85%;
             min-width: 0;
             align-items: flex-start;
         }
@@ -405,8 +622,8 @@ class ConversationWebServerV2:
         }
 
         .message-bubble {
-            border-radius: var(--radius-lg);
-            padding: 16px 20px;
+            border-radius: 10px;
+            padding: 12px 16px;
             box-shadow: var(--shadow-md);
             position: relative;
             transition: var(--transition);
@@ -815,7 +1032,7 @@ class ConversationWebServerV2:
 </head>
 <body>
     <div class="container">
-        <div class="sidebar">
+        <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h1>💬 对话历史</h1>
                 <p id="project-name"></p>
@@ -826,17 +1043,6 @@ class ConversationWebServerV2:
         </div>
 
         <div class="main-content">
-            <div class="content-header">
-                <h2>✨ 对话内容</h2>
-                <div class="btn-group">
-                    <button class="btn btn-primary" onclick="copyAllConversation()">
-                        📋 复制全部
-                    </button>
-                    <button class="btn btn-secondary" onclick="window.close()">
-                        ✕ 关闭
-                    </button>
-                </div>
-            </div>
             <div class="conversation-view" id="conversation-view">
                 <div class="empty-state">
                     <div class="empty-state-icon">💭</div>
@@ -844,7 +1050,20 @@ class ConversationWebServerV2:
                 </div>
             </div>
         </div>
+
+        <div class="outline-sidebar" id="outline-sidebar">
+            <div class="outline-header">
+                <h3>📋 大纲目录</h3>
+            </div>
+            <div class="outline-content" id="outline-content">
+                <div class="outline-empty">暂无内容</div>
+            </div>
+        </div>
     </div>
+
+    <div class="sidebar-toggle-btn active" id="sidebar-toggle-btn" onclick="toggleSidebar()">☰</div>
+    <div class="outline-toggle-btn active" id="outline-toggle-btn" onclick="toggleOutline()">📑</div>
+    <div class="refresh-btn" id="refresh-btn" onclick="refreshData()">🔄</div>
 
     <div class="notification" id="notification">
         <span class="notification-icon">✓</span>
@@ -863,31 +1082,49 @@ class ConversationWebServerV2:
             const listEl = document.getElementById('session-list');
             listEl.innerHTML = '';
 
+            // 按日期分组
+            const groupedByDate = {};
             sessions.forEach((session, index) => {
-                const item = document.createElement('div');
-                item.className = 'session-item';
-                item.innerHTML = `
-                    <div class="session-title">
-                        <span class="session-badge">${index + 1}</span>
-                        <span>会话记录</span>
-                    </div>
-                    <div class="session-meta">
-                        <div class="session-meta-item">
-                            <span>🕒</span>
-                            <span>${session.last_time}</span>
-                        </div>
-                        <div class="session-meta-item">
+                const date = session.last_time.split(' ')[0]; // 提取日期部分
+                if (!groupedByDate[date]) {
+                    groupedByDate[date] = [];
+                }
+                groupedByDate[date].push({ session, index });
+            });
+
+            // 按日期排序（最新的在前，未知时间放最后）
+            const sortedDates = Object.keys(groupedByDate).sort((a, b) => {
+                if (a === '未知时间') return 1;
+                if (b === '未知时间') return -1;
+                return b.localeCompare(a);
+            });
+
+            // 渲染分组
+            sortedDates.forEach(date => {
+                const dateGroup = document.createElement('div');
+                dateGroup.className = 'date-group';
+
+                const dateHeader = document.createElement('div');
+                dateHeader.className = 'date-header';
+                dateHeader.textContent = date;
+                dateGroup.appendChild(dateHeader);
+
+                groupedByDate[date].forEach(({ session, index }) => {
+                    const timeOnly = session.last_time.split(' ')[1]; // 提取时间部分
+                    const item = document.createElement('div');
+                    item.className = 'session-item';
+                    item.innerHTML = `
+                        <div class="session-time">${timeOnly}</div>
+                        <div class="session-meta">
                             <span>💬</span>
                             <span>${session.message_count} 条对话</span>
                         </div>
-                        <div class="session-meta-item">
-                            <span>📦</span>
-                            <span>${session.file_size}</span>
-                        </div>
-                    </div>
-                `;
-                item.onclick = () => loadConversation(index, item);
-                listEl.appendChild(item);
+                    `;
+                    item.onclick = () => loadConversation(index, item);
+                    dateGroup.appendChild(item);
+                });
+
+                listEl.appendChild(dateGroup);
             });
 
             // 自动选择第一个
@@ -1019,8 +1256,9 @@ class ConversationWebServerV2:
                     toolsHtml += '</div>';
                 }
 
+                const messageId = `msg-${index}`;
                 html += `
-                    <div class="message-group ${roleClass}">
+                    <div class="message-group ${roleClass}" id="${messageId}">
                         <div class="message-wrapper">
                             <div class="message-avatar">${roleIcon}</div>
                             <div class="message-content-wrapper">
@@ -1040,7 +1278,13 @@ class ConversationWebServerV2:
             });
 
             viewEl.innerHTML = html;
-            viewEl.scrollTop = 0;
+            // 滚动到底部
+            setTimeout(() => {
+                viewEl.scrollTop = viewEl.scrollHeight;
+            }, 100);
+
+            // 更新大纲
+            updateOutline(session);
         }
 
         function getToolIcon(toolName) {
@@ -1115,6 +1359,109 @@ class ConversationWebServerV2:
             setTimeout(() => {
                 notification.classList.remove('show');
             }, 2500);
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const toggleBtn = document.getElementById('sidebar-toggle-btn');
+            sidebar.classList.toggle('collapsed');
+            toggleBtn.classList.toggle('active');
+        }
+
+        function toggleOutline() {
+            const sidebar = document.getElementById('outline-sidebar');
+            const toggleBtn = document.getElementById('outline-toggle-btn');
+            sidebar.classList.toggle('collapsed');
+            toggleBtn.classList.toggle('active');
+        }
+
+        function refreshData() {
+            const btn = document.getElementById('refresh-btn');
+            btn.classList.add('spinning');
+
+            // 请求服务器重新加载数据
+            fetch('/api/refresh')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // 重新加载页面
+                        location.reload();
+                    } else {
+                        showNotification('刷新失败: ' + data.error);
+                        btn.classList.remove('spinning');
+                    }
+                })
+                .catch(error => {
+                    showNotification('刷新失败: ' + error.message);
+                    btn.classList.remove('spinning');
+                });
+        }
+
+        function updateOutline(session) {
+            const outlineEl = document.getElementById('outline-content');
+            const userMessages = session.messages.filter(msg => msg.role === 'user');
+
+            if (userMessages.length === 0) {
+                outlineEl.innerHTML = '<div class="outline-empty">暂无用户消息</div>';
+                return;
+            }
+
+            let html = '';
+            userMessages.forEach((msg, userIndex) => {
+                // 找到该消息在完整消息列表中的索引
+                const msgIndex = session.messages.indexOf(msg);
+                const messageId = `msg-${msgIndex}`;
+
+                // 提取时间（只显示时:分:秒）
+                const timeOnly = msg.timestamp ? msg.timestamp.split(' ')[1] : '';
+
+                // 截取消息文本（最多显示50个字符）
+                let previewText = msg.text ? msg.text.trim() : '(无文本内容)';
+                if (previewText.length > 50) {
+                    previewText = previewText.substring(0, 50) + '...';
+                }
+
+                html += `
+                    <div class="outline-item" onclick="scrollToMessage('${messageId}', this)">
+                        <div class="outline-item-time">${escapeHtml(timeOnly)}</div>
+                        <div class="outline-item-text">${escapeHtml(previewText)}</div>
+                    </div>
+                `;
+            });
+
+            outlineEl.innerHTML = html;
+
+            // 滚动到底部
+            setTimeout(() => {
+                outlineEl.scrollTop = outlineEl.scrollHeight;
+            }, 100);
+        }
+
+        function scrollToMessage(messageId, outlineItem) {
+            // 移除所有outline-item的active类
+            document.querySelectorAll('.outline-item').forEach(item => {
+                item.classList.remove('active');
+            });
+
+            // 添加active类到当前项
+            if (outlineItem) {
+                outlineItem.classList.add('active');
+            }
+
+            // 滚动到目标消息
+            const messageEl = document.getElementById(messageId);
+            if (messageEl) {
+                messageEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                // 添加高亮动画
+                messageEl.style.transition = 'background-color 0.5s ease';
+                const originalBg = messageEl.style.backgroundColor;
+                messageEl.style.backgroundColor = 'rgba(0, 212, 255, 0.1)';
+
+                setTimeout(() => {
+                    messageEl.style.backgroundColor = originalBg;
+                }, 1000);
+            }
         }
     </script>
 </body>
@@ -1333,14 +1680,70 @@ class ConversationWebServerV2:
         return diff_lines
 
     def start(self):
-        """启动Web服务器"""
-        html_content = self.generate_html()
-        html_file = Path(__file__).parent / "conversation_view.html"
+        """启动HTTP服务器"""
+        port = 8765
+        server_instance = self
 
-        with open(html_file, 'w', encoding='utf-8') as f:
-            f.write(html_content)
+        class RequestHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                # 禁用默认日志输出
+                pass
 
-        webbrowser.open(f'file:///{html_file.absolute()}')
+            def do_GET(self):
+                if self.path == '/':
+                    # 返回HTML页面
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html; charset=utf-8')
+                    self.end_headers()
+                    html_content = server_instance.generate_html()
+                    self.wfile.write(html_content.encode('utf-8'))
+
+                elif self.path == '/api/refresh':
+                    # 刷新数据API
+                    try:
+                        server_instance.sessions = []  # 清空缓存
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json; charset=utf-8')
+                        self.end_headers()
+                        response = json.dumps({'success': True})
+                        self.wfile.write(response.encode('utf-8'))
+                    except Exception as e:
+                        self.send_response(500)
+                        self.send_header('Content-type', 'application/json; charset=utf-8')
+                        self.end_headers()
+                        response = json.dumps({'success': False, 'error': str(e)})
+                        self.wfile.write(response.encode('utf-8'))
+
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        try:
+            self.server = HTTPServer(('localhost', port), RequestHandler)
+            print(f"\n✨ 对话历史服务器已启动: http://localhost:{port}")
+            print("📌 按 Ctrl+C 可以关闭服务器\n")
+
+            # 在新线程中启动服务器
+            self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.server_thread.start()
+
+            # 打开浏览器
+            webbrowser.open(f'http://localhost:{port}')
+
+            # 保持主线程运行
+            try:
+                while True:
+                    threading.Event().wait(1)
+            except KeyboardInterrupt:
+                print("\n🛑 正在关闭服务器...")
+                self.server.shutdown()
+                print("✅ 服务器已关闭")
+
+        except OSError as e:
+            if e.errno == 10048:  # 端口已被占用
+                print(f"❌ 端口 {port} 已被占用，请关闭其他占用该端口的程序")
+            else:
+                print(f"❌ 启动服务器失败: {e}")
 
 
 def show_conversation_web(project_path, conversation_viewer):

@@ -2,3 +2,5 @@
 /dist
 /.claude
 __pycache__conversation_view.html
+conversation_view.html
+__pycache__
