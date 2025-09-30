@@ -301,6 +301,32 @@ class ConversationWebServerV2:
             color: var(--primary-orange);
         }
 
+        /* Git commit 专用样式 */
+        .outline-item.git-commit {
+            background: rgba(239, 68, 68, 0.08);
+            border-left-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .outline-item.git-commit:hover {
+            background: rgba(239, 68, 68, 0.15);
+            border-left-color: #ef4444;
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.3);
+        }
+
+        .outline-item.git-commit.active {
+            background: rgba(239, 68, 68, 0.2);
+            border-left-color: #ef4444;
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
+        }
+
+        .outline-item.git-commit.active .outline-item-text {
+            color: #ef4444;
+        }
+
+        .outline-item.git-commit.active .outline-item-time {
+            color: #ef4444;
+        }
+
         .outline-empty {
             padding: 40px 20px;
             text-align: center;
@@ -351,6 +377,7 @@ class ConversationWebServerV2:
         .session-list {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 16px 12px;
         }
 
@@ -428,6 +455,126 @@ class ConversationWebServerV2:
             display: flex;
             align-items: center;
             gap: 4px;
+        }
+
+        .session-time-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+
+        .git-commit-badge {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 18px;
+            box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
+            position: relative;
+        }
+
+        .git-commit-badge:hover {
+            transform: scale(1.1);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.6);
+        }
+
+        /* 悬浮提示框 - 时间线风格 */
+        .git-commit-tooltip {
+            display: none;
+            position: fixed;
+            left: 220px;
+            background: var(--bg-card);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 12px;
+            padding: 16px;
+            min-width: 280px;
+            max-width: 400px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(239, 68, 68, 0.2);
+            z-index: 10000;
+            transition: opacity 0.3s ease;
+            backdrop-filter: blur(20px);
+        }
+
+        .git-commit-tooltip.show {
+            display: block;
+        }
+
+        .git-commit-tooltip-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #ef4444;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .git-commit-timeline {
+            position: relative;
+            padding-left: 24px;
+        }
+
+        .git-commit-timeline::before {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 8px;
+            bottom: 8px;
+            width: 2px;
+            background: linear-gradient(180deg, #ef4444 0%, rgba(239, 68, 68, 0.2) 100%);
+        }
+
+        .git-commit-timeline-item {
+            position: relative;
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            background: rgba(239, 68, 68, 0.05);
+            border-radius: 8px;
+            border-left: 2px solid rgba(239, 68, 68, 0.3);
+            transition: var(--transition);
+        }
+
+        .git-commit-timeline-item:hover {
+            background: rgba(239, 68, 68, 0.12);
+            border-left-color: #ef4444;
+            transform: translateX(2px);
+        }
+
+        .git-commit-timeline-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .git-commit-timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -28px;
+            top: 12px;
+            width: 8px;
+            height: 8px;
+            background: #ef4444;
+            border-radius: 50%;
+            border: 2px solid var(--bg-card);
+            box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3);
+        }
+
+        .git-commit-timeline-time {
+            font-size: 10px;
+            color: var(--text-dim);
+            font-family: 'Consolas', 'Monaco', monospace;
+            margin-bottom: 4px;
+        }
+
+        .git-commit-timeline-text {
+            font-size: 12px;
+            color: var(--text-primary);
+            line-height: 1.5;
         }
 
         /* 主内容区 */
@@ -1078,6 +1225,47 @@ class ConversationWebServerV2:
         document.getElementById('project-name').textContent = projectName;
         loadSessionList();
 
+        function extractGitCommits(session) {
+            const commits = [];
+            if (!session.messages) return commits;
+
+            session.messages.forEach(msg => {
+                if (msg.role === 'assistant' && msg.tools && msg.tools.length > 0) {
+                    msg.tools.forEach(tool => {
+                        if (tool.name === 'Bash' && tool.input && tool.input.command) {
+                            const command = tool.input.command;
+                            if (command.includes('git commit')) {
+                                let commitSummary = '';
+
+                                // 尝试从heredoc中提取
+                                const heredocMatch = command.match(/\\$\\(cat\\s+<<'EOF'([\\s\\S]*?)EOF/);
+                                if (heredocMatch) {
+                                    const commitMsg = heredocMatch[1].trim();
+                                    commitSummary = commitMsg.split('\\n')[0].trim();
+                                } else {
+                                    // 尝试从-m参数中提取
+                                    const mMatch = command.match(/git\\s+commit\\s+-m\\s+["']([^"']+)["']/);
+                                    if (mMatch) {
+                                        commitSummary = mMatch[1].trim().split('\\n')[0].trim();
+                                    }
+                                }
+
+                                if (commitSummary) {
+                                    const timeOnly = msg.timestamp ? msg.timestamp.split(' ')[1] : '';
+                                    commits.push({
+                                        time: timeOnly,
+                                        summary: commitSummary
+                                    });
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+
+            return commits;
+        }
+
         function loadSessionList() {
             const listEl = document.getElementById('session-list');
             listEl.innerHTML = '';
@@ -1111,10 +1299,29 @@ class ConversationWebServerV2:
 
                 groupedByDate[date].forEach(({ session, index }) => {
                     const timeOnly = session.last_time.split(' ')[1]; // 提取时间部分
+
+                    // 统计该会话中的git commit次数
+                    const gitCommits = extractGitCommits(sessions[index]);
+
                     const item = document.createElement('div');
                     item.className = 'session-item';
+
+                    let gitBadgeHtml = '';
+                    let tooltipId = '';
+                    if (gitCommits.length > 0) {
+                        tooltipId = `tooltip-${index}`;
+                        gitBadgeHtml = `
+                            <div class="git-commit-badge" data-tooltip-id="${tooltipId}">
+                                ${gitCommits.length}
+                            </div>
+                        `;
+                    }
+
                     item.innerHTML = `
-                        <div class="session-time">${timeOnly}</div>
+                        <div class="session-time-row">
+                            <div class="session-time">${timeOnly}</div>
+                            ${gitBadgeHtml}
+                        </div>
                         <div class="session-meta">
                             <span>💬</span>
                             <span>${session.message_count} 条对话</span>
@@ -1122,6 +1329,55 @@ class ConversationWebServerV2:
                     `;
                     item.onclick = () => loadConversation(index, item);
                     dateGroup.appendChild(item);
+
+                    // 为git徽章创建tooltip并添加到body
+                    if (gitCommits.length > 0) {
+                        setTimeout(() => {
+                            const badge = item.querySelector('.git-commit-badge');
+                            if (badge) {
+                                // 创建tooltip元素
+                                const tooltip = document.createElement('div');
+                                tooltip.className = 'git-commit-tooltip';
+                                tooltip.id = tooltipId;
+
+                                let tooltipContent = '<div class="git-commit-tooltip-title">📌 Git Commits</div><div class="git-commit-timeline">';
+                                gitCommits.forEach(commit => {
+                                    tooltipContent += `
+                                        <div class="git-commit-timeline-item">
+                                            <div class="git-commit-timeline-time">${commit.time}</div>
+                                            <div class="git-commit-timeline-text">${escapeHtml(commit.summary)}</div>
+                                        </div>
+                                    `;
+                                });
+                                tooltipContent += '</div>';
+                                tooltip.innerHTML = tooltipContent;
+
+                                document.body.appendChild(tooltip);
+
+                                let hideTimeout;
+
+                                const showTooltip = () => {
+                                    clearTimeout(hideTimeout);
+                                    const rect = badge.getBoundingClientRect();
+                                    tooltip.style.top = rect.top + 'px';
+                                    tooltip.classList.add('show');
+                                };
+
+                                const hideTooltip = () => {
+                                    hideTimeout = setTimeout(() => {
+                                        tooltip.classList.remove('show');
+                                    }, 100);
+                                };
+
+                                badge.addEventListener('mouseenter', showTooltip);
+                                badge.addEventListener('mouseleave', hideTooltip);
+                                tooltip.addEventListener('mouseenter', () => {
+                                    clearTimeout(hideTimeout);
+                                });
+                                tooltip.addEventListener('mouseleave', hideTooltip);
+                            }
+                        }, 0);
+                    }
                 });
 
                 listEl.appendChild(dateGroup);
@@ -1571,34 +1827,93 @@ class ConversationWebServerV2:
 
         function updateOutline(session) {
             const outlineEl = document.getElementById('outline-content');
-            const userMessages = session.messages.filter(msg => msg.role === 'user');
 
-            if (userMessages.length === 0) {
-                outlineEl.innerHTML = '<div class="outline-empty">暂无用户消息</div>';
+            // 构建大纲项数组（包括用户消息和git commit）
+            const outlineItems = [];
+
+            // 遍历所有消息
+            session.messages.forEach((msg, msgIndex) => {
+                const messageId = `msg-${msgIndex}`;
+                const timeOnly = msg.timestamp ? msg.timestamp.split(' ')[1] : '';
+                const timestamp = msg.timestamp || '';
+
+                if (msg.role === 'user') {
+                    // 用户消息
+                    let previewText = msg.text ? msg.text.trim() : '(无文本内容)';
+                    if (previewText.length > 50) {
+                        previewText = previewText.substring(0, 50) + '...';
+                    }
+
+                    outlineItems.push({
+                        timestamp: timestamp,
+                        timeOnly: timeOnly,
+                        messageId: messageId,
+                        html: `
+                            <div class="outline-item" onclick="scrollToMessage('${messageId}', this)">
+                                <div class="outline-item-time">${escapeHtml(timeOnly)}</div>
+                                <div class="outline-item-text">${escapeHtml(previewText)}</div>
+                            </div>
+                        `
+                    });
+                } else if (msg.role === 'assistant') {
+                    // 检查assistant消息中的git commit工具调用
+                    if (msg.tools && msg.tools.length > 0) {
+                        msg.tools.forEach((tool, toolIndex) => {
+                            if (tool.name === 'Bash' && tool.input && tool.input.command) {
+                                const command = tool.input.command;
+
+                                if (command.includes('git commit')) {
+                                    let commitSummary = '';
+
+                                    // 尝试从heredoc中提取 $(cat <<'EOF' ... EOF)
+                                    const heredocMatch = command.match(/\\$\\(cat\\s+<<'EOF'([\\s\\S]*?)EOF/);
+                                    if (heredocMatch) {
+                                        const commitMsg = heredocMatch[1].trim();
+                                        const firstLine = commitMsg.split('\\n')[0].trim();
+                                        commitSummary = firstLine;
+                                    } else {
+                                        // 尝试从-m参数中提取
+                                        const mMatch = command.match(/git\\s+commit\\s+-m\\s+["']([^"']+)["']/);
+                                        if (mMatch) {
+                                            const commitMsg = mMatch[1].trim();
+                                            const firstLine = commitMsg.split('\\n')[0].trim();
+                                            commitSummary = firstLine;
+                                        }
+                                    }
+
+                                    if (commitSummary) {
+                                        if (commitSummary.length > 50) {
+                                            commitSummary = commitSummary.substring(0, 50) + '...';
+                                        }
+
+                                        outlineItems.push({
+                                            timestamp: timestamp,
+                                            timeOnly: timeOnly,
+                                            messageId: messageId,
+                                            html: `
+                                                <div class="outline-item git-commit" onclick="scrollToMessage('${messageId}', this)">
+                                                    <div class="outline-item-time">${escapeHtml(timeOnly)}</div>
+                                                    <div class="outline-item-text">🔖 ${escapeHtml(commitSummary)}</div>
+                                                </div>
+                                            `
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+
+            if (outlineItems.length === 0) {
+                outlineEl.innerHTML = '<div class="outline-empty">暂无内容</div>';
                 return;
             }
 
+            // 按时间排序（已经按照消息顺序，无需额外排序）
             let html = '';
-            userMessages.forEach((msg, userIndex) => {
-                // 找到该消息在完整消息列表中的索引
-                const msgIndex = session.messages.indexOf(msg);
-                const messageId = `msg-${msgIndex}`;
-
-                // 提取时间（只显示时:分:秒）
-                const timeOnly = msg.timestamp ? msg.timestamp.split(' ')[1] : '';
-
-                // 截取消息文本（最多显示50个字符）
-                let previewText = msg.text ? msg.text.trim() : '(无文本内容)';
-                if (previewText.length > 50) {
-                    previewText = previewText.substring(0, 50) + '...';
-                }
-
-                html += `
-                    <div class="outline-item" onclick="scrollToMessage('${messageId}', this)">
-                        <div class="outline-item-time">${escapeHtml(timeOnly)}</div>
-                        <div class="outline-item-text">${escapeHtml(previewText)}</div>
-                    </div>
-                `;
+            outlineItems.forEach(item => {
+                html += item.html;
             });
 
             outlineEl.innerHTML = html;
