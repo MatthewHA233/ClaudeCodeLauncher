@@ -5,6 +5,8 @@ import os
 import json
 import webbrowser
 from pathlib import Path
+import difflib
+import base64
 
 class ConversationWebServerV2:
     def __init__(self, project_path, conversation_viewer):
@@ -614,6 +616,92 @@ class ConversationWebServerV2:
             background: rgba(10, 14, 39, 0.3);
         }
 
+        /* Diff视图样式 */
+        .diff-view {
+            margin-top: 12px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            background: rgba(0, 0, 0, 0.25);
+        }
+
+        .diff-line {
+            padding: 2px 8px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .diff-line-add {
+            background: rgba(34, 197, 94, 0.15);
+            color: #6ee7b7;
+            border-left: 3px solid #22c55e;
+        }
+
+        .diff-line-add::before {
+            content: '+ ';
+            color: #22c55e;
+            font-weight: bold;
+        }
+
+        .diff-line-remove {
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
+            border-left: 3px solid #ef4444;
+        }
+
+        .diff-line-remove::before {
+            content: '- ';
+            color: #ef4444;
+            font-weight: bold;
+        }
+
+        .diff-line-context {
+            background: transparent;
+            color: rgba(228, 231, 235, 0.6);
+            padding-left: 11px;
+        }
+
+        .tool-result {
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--primary-blue);
+        }
+
+        .tool-result-header {
+            font-size: 11px;
+            color: var(--primary-blue);
+            font-weight: 700;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .tool-result-content {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .tool-result-error {
+            border-left-color: #ef4444;
+        }
+
+        .tool-result-error .tool-result-header {
+            color: #ef4444;
+        }
+
+        .tool-result-error .tool-result-content {
+            color: #fca5a5;
+        }
+
         /* 空状态 */
         .empty-state {
             display: flex;
@@ -764,8 +852,9 @@ class ConversationWebServerV2:
     </div>
 
     <script>
-        const sessions = """ + json.dumps(self.get_sessions_data(), ensure_ascii=False).replace('</script>', '<\\/script>') + """;
-        const projectName = """ + json.dumps(os.path.basename(self.project_path), ensure_ascii=False) + """;
+        const sessionsDataB64 = '""" + base64.b64encode(json.dumps(self.get_sessions_data(), ensure_ascii=True).encode('utf-8')).decode('ascii') + """';
+        const sessions = JSON.parse(atob(sessionsDataB64));
+        const projectName = """ + json.dumps(os.path.basename(self.project_path), ensure_ascii=True) + """;
 
         document.getElementById('project-name').textContent = projectName;
         loadSessionList();
@@ -846,10 +935,15 @@ class ConversationWebServerV2:
                         const toolId = `tool-${index}-${toolIndex}`;
                         const toolIcon = getToolIcon(tool.name);
 
-                        // 构建参数列表
+                        // 构建参数列表 (对于Edit工具，跳过old_string和new_string)
                         let paramsHtml = '';
                         if (tool.input && typeof tool.input === 'object') {
                             for (const [key, value] of Object.entries(tool.input)) {
+                                // 对于Edit工具，old_string和new_string会在diff中显示
+                                if (tool.name === 'Edit' && (key === 'old_string' || key === 'new_string')) {
+                                    continue;
+                                }
+
                                 let displayValue = value;
                                 if (typeof value === 'string' && value.length > 100) {
                                     displayValue = value.substring(0, 100) + '...';
@@ -868,6 +962,41 @@ class ConversationWebServerV2:
                             }
                         }
 
+                        // 构建diff视图 (仅Edit工具)
+                        let diffHtml = '';
+                        if (tool.diff && Array.isArray(tool.diff)) {
+                            diffHtml = '<div class="diff-view">';
+                            tool.diff.forEach(line => {
+                                let lineClass = 'diff-line';
+                                if (line.type === 'add') {
+                                    lineClass += ' diff-line-add';
+                                } else if (line.type === 'remove') {
+                                    lineClass += ' diff-line-remove';
+                                } else {
+                                    lineClass += ' diff-line-context';
+                                }
+                                diffHtml += `<div class="${lineClass}">${escapeHtml(line.content)}</div>`;
+                            });
+                            diffHtml += '</div>';
+                        }
+
+                        // 构建结果视图
+                        let resultHtml = '';
+                        if (tool.result) {
+                            const isError = tool.result.is_error;
+                            const resultContent = String(tool.result.content);
+                            const displayContent = resultContent.length > 500 ? resultContent.substring(0, 500) + '\\n\\n... (内容过长，已截断)' : resultContent;
+
+                            resultHtml = `
+                                <div class="tool-result ${isError ? 'tool-result-error' : ''}">
+                                    <div class="tool-result-header">
+                                        ${isError ? '❌ 执行失败' : '✅ 执行结果'}
+                                    </div>
+                                    <div class="tool-result-content">${escapeHtml(displayContent)}</div>
+                                </div>
+                            `;
+                        }
+
                         toolsHtml += `
                             <div class="tool-item expanded" id="${toolId}">
                                 <div class="tool-header" onclick="toggleTool('${toolId}')">
@@ -880,6 +1009,8 @@ class ConversationWebServerV2:
                                 <div class="tool-details">
                                     <div class="tool-details-content">
                                         ${paramsHtml || '<div class="tool-param-value">无参数</div>'}
+                                        ${diffHtml}
+                                        ${resultHtml}
                                     </div>
                                 </div>
                             </div>
@@ -1025,7 +1156,23 @@ class ConversationWebServerV2:
         # 按时间排序
         all_records.sort(key=lambda x: x.get('timestamp', ''))
 
-        # 构建对话消息
+        # 第一步：建立工具调用ID到结果的映射
+        tool_results_map = {}
+        for record in all_records:
+            if record.get('type') == 'user':
+                msg_data = record.get('message', {})
+                content = msg_data.get('content', [])
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'tool_result':
+                            tool_use_id = item.get('tool_use_id')
+                            if tool_use_id:
+                                tool_results_map[tool_use_id] = {
+                                    'content': item.get('content', ''),
+                                    'is_error': item.get('is_error', False)
+                                }
+
+        # 第二步：构建对话消息
         messages = []
         current_assistant_msg = None
         current_assistant_tools = []
@@ -1080,10 +1227,25 @@ class ConversationWebServerV2:
                                         current_assistant_msg = text
                             elif item.get('type') == 'tool_use':
                                 # 提取工具详细信息
+                                tool_id = item.get('id', '')
+                                tool_name = item.get('name', 'unknown')
+                                tool_input = item.get('input', {})
+                                tool_result = tool_results_map.get(tool_id)
+
+                                # 对于Edit工具，生成diff
+                                diff_data = None
+                                if tool_name == 'Edit' and tool_input:
+                                    old_string = tool_input.get('old_string', '')
+                                    new_string = tool_input.get('new_string', '')
+                                    if old_string and new_string:
+                                        diff_data = self.generate_diff_html(old_string, new_string)
+
                                 tool_info = {
-                                    'name': item.get('name', 'unknown'),
-                                    'id': item.get('id', ''),
-                                    'input': item.get('input', {})
+                                    'name': tool_name,
+                                    'id': tool_id,
+                                    'input': tool_input,
+                                    'result': tool_result,
+                                    'diff': diff_data
                                 }
                                 current_assistant_tools.append(tool_info)
 
@@ -1135,6 +1297,40 @@ class ConversationWebServerV2:
             return True
 
         return False
+
+    def generate_diff_html(self, old_text, new_text):
+        """生成diff数据用于前端渲染"""
+        if not old_text or not new_text:
+            return None
+
+        old_lines = old_text.splitlines(keepends=True)
+        new_lines = new_text.splitlines(keepends=True)
+
+        diff_lines = []
+        differ = difflib.Differ()
+        diff = list(differ.compare(old_lines, new_lines))
+
+        for line in diff:
+            if line.startswith('- '):
+                # 删除的行
+                diff_lines.append({
+                    'type': 'remove',
+                    'content': line[2:].rstrip('\n\r')
+                })
+            elif line.startswith('+ '):
+                # 添加的行
+                diff_lines.append({
+                    'type': 'add',
+                    'content': line[2:].rstrip('\n\r')
+                })
+            elif line.startswith('  '):
+                # 未改变的行
+                diff_lines.append({
+                    'type': 'context',
+                    'content': line[2:].rstrip('\n\r')
+                })
+
+        return diff_lines
 
     def start(self):
         """启动Web服务器"""
