@@ -11,23 +11,32 @@ class ConversationViewer:
 
     def get_project_hash(self, project_path):
         """根据项目路径生成对应的目录名（使用模糊匹配）"""
-        # Claude Code 使用特殊的目录命名方式，规则复杂
-        # 使用模糊匹配：提取路径中的ASCII部分进行匹配
+        # Claude Code 命名规则：盘符-路径（非ASCII字符变横杠）
+        # 例如：E:\人工智能\激励播放器 → E------------------
+        #      D:\my_pro\项目 → D--my-pro-------
 
         if not self.claude_projects_dir.exists():
             return None
 
-        # 提取路径中的ASCII关键词（去除中文和特殊字符）
+        # 规范化路径
+        norm_path = project_path.replace("\\", "/")
+        parts = norm_path.split("/")
+
+        if not parts:
+            return None
+
+        # 提取盘符（如 C:, D:, E:）
+        drive = parts[0].upper().rstrip(":")
+
+        # 计算路径分隔符数量（层级深度）
+        path_depth = len(parts) - 1  # 减去盘符
+
+        # 提取ASCII关键词（用于精确匹配）
         ascii_keywords = []
-        for part in project_path.replace("\\", "/").split("/"):
-            # 提取每个部分的ASCII字符（保留下划线和横杠）
+        for part in parts[1:]:  # 跳过盘符
             ascii_part = ''.join(c for c in part if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
             if ascii_part:
-                # 将下划线替换为横杠，以匹配目录名
                 ascii_keywords.append(ascii_part.replace('_', '-').lower())
-
-        if not ascii_keywords:
-            return None
 
         # 查找最佳匹配的目录
         best_match = None
@@ -35,13 +44,22 @@ class ConversationViewer:
 
         for dir_name in os.listdir(self.claude_projects_dir):
             dir_path = self.claude_projects_dir / dir_name
-            if dir_path.is_dir():
-                dir_lower = dir_name.lower()
+            if not dir_path.is_dir():
+                continue
 
-                # 计算匹配分数：所有关键词都必须出现
-                score = 0
+            # 必须匹配盘符
+            if not dir_name.startswith(drive + "--"):
+                continue
+
+            dir_lower = dir_name.lower()
+
+            # 计算该目录的横杠段数（路径深度）
+            dir_depth = dir_name.count("-") - 1  # 减去盘符后的双横杠
+
+            # 如果有ASCII关键词，必须全部匹配
+            if ascii_keywords:
                 all_matched = True
-
+                score = 0
                 for keyword in ascii_keywords:
                     if keyword in dir_lower:
                         score += len(keyword)
@@ -49,8 +67,15 @@ class ConversationViewer:
                         all_matched = False
                         break
 
-                # 只有所有关键词都匹配时才考虑
                 if all_matched and score > best_score:
+                    best_score = score
+                    best_match = dir_name
+            else:
+                # 纯中文路径：匹配盘符 + 路径深度最接近的
+                depth_diff = abs(dir_depth - path_depth * 2)  # 每层约2个横杠
+                score = 1000 - depth_diff  # 深度越接近分数越高
+
+                if score > best_score:
                     best_score = score
                     best_match = dir_name
 
