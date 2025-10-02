@@ -34,7 +34,9 @@ class ConversationViewer:
         # 提取ASCII关键词（用于精确匹配）
         ascii_keywords = []
         for part in parts[1:]:  # 跳过盘符
-            ascii_part = ''.join(c for c in part if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
+            # 先将空格替换为横杠，再提取ASCII字符
+            part_normalized = part.replace(' ', '-')
+            ascii_part = ''.join(c for c in part_normalized if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
             if ascii_part:
                 ascii_keywords.append(ascii_part.replace('_', '-').lower())
 
