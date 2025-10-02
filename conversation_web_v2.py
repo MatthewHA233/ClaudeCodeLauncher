@@ -573,12 +573,18 @@ class ConversationWebServerV2:
             border-radius: 8px;
             border-left: 2px solid rgba(239, 68, 68, 0.3);
             transition: var(--transition);
+            cursor: pointer;
         }
 
         .git-commit-timeline-item:hover {
             background: rgba(239, 68, 68, 0.12);
             border-left-color: #ef4444;
             transform: translateX(2px);
+        }
+
+        .git-commit-timeline-item:active {
+            background: rgba(239, 68, 68, 0.2);
+            transform: scale(0.98);
         }
 
         .git-commit-timeline-item:last-child {
@@ -1381,9 +1387,9 @@ class ConversationWebServerV2:
                                 tooltip.id = tooltipId;
 
                                 let tooltipContent = '<div class="git-commit-tooltip-title">📌 Git Commits</div><div class="git-commit-timeline">';
-                                gitCommits.forEach(commit => {
+                                gitCommits.forEach((commit, commitIndex) => {
                                     tooltipContent += `
-                                        <div class="git-commit-timeline-item">
+                                        <div class="git-commit-timeline-item" data-commit-time="${commit.time}" data-commit-summary="${escapeHtml(commit.summary)}">
                                             <div class="git-commit-timeline-time">${commit.time}</div>
                                             <div class="git-commit-timeline-text">${escapeHtml(commit.summary)}</div>
                                         </div>
@@ -1393,6 +1399,38 @@ class ConversationWebServerV2:
                                 tooltip.innerHTML = tooltipContent;
 
                                 document.body.appendChild(tooltip);
+
+                                // 为每个 timeline item 添加点击事件
+                                const timelineItems = tooltip.querySelectorAll('.git-commit-timeline-item');
+                                timelineItems.forEach(timelineItem => {
+                                    timelineItem.addEventListener('click', (e) => {
+                                        e.stopPropagation();
+                                        const commitTime = timelineItem.getAttribute('data-commit-time');
+                                        const commitSummary = timelineItem.getAttribute('data-commit-summary');
+
+                                        // 先加载对应会话
+                                        loadConversation(index, item);
+
+                                        // 等待会话加载完成后，再触发右侧栏跳转
+                                        setTimeout(() => {
+                                            // 查找右侧栏中对应的 git commit 项并触发点击
+                                            const outlineItems = document.querySelectorAll('.outline-item.git-commit');
+                                            outlineItems.forEach(outlineItem => {
+                                                const outlineTime = outlineItem.querySelector('.outline-item-time');
+                                                const outlineText = outlineItem.querySelector('.outline-item-text');
+
+                                                if (outlineTime && outlineText) {
+                                                    const timeMatch = outlineTime.textContent.trim() === commitTime;
+                                                    const textMatch = outlineText.textContent.includes(commitSummary.substring(0, 30));
+
+                                                    if (timeMatch && textMatch) {
+                                                        outlineItem.click();
+                                                    }
+                                                }
+                                            });
+                                        }, 150);
+                                    });
+                                });
 
                                 let hideTimeout;
 
