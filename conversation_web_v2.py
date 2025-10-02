@@ -1408,10 +1408,16 @@ class ConversationWebServerV2:
                                         const commitTime = timelineItem.getAttribute('data-commit-time');
                                         const commitSummary = timelineItem.getAttribute('data-commit-summary');
 
-                                        // 先加载对应会话
-                                        loadConversation(index, item);
+                                        // 检查是否需要切换会话（当前会话是否为目标会话）
+                                        const isCurrentSession = item.classList.contains('active');
+
+                                        if (!isCurrentSession) {
+                                            // 需要切换会话
+                                            loadConversation(index, item);
+                                        }
 
                                         // 等待会话加载完成后，再触发右侧栏跳转
+                                        const delay = isCurrentSession ? 0 : 150;
                                         setTimeout(() => {
                                             // 查找右侧栏中对应的 git commit 项并触发点击
                                             const outlineItems = document.querySelectorAll('.outline-item.git-commit');
@@ -1428,7 +1434,7 @@ class ConversationWebServerV2:
                                                     }
                                                 }
                                             });
-                                        }, 150);
+                                        }, delay);
                                     });
                                 });
 
