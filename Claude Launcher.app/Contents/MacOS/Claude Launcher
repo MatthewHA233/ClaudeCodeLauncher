@@ -1,0 +1,10 @@
+#!/bin/bash
+# Claude Launcher for macOS
+# 项目所在的真实路径
+PROJECT_PATH="/Users/maxwellchen/Projects/Github/ClaudeCodeLauncher"
+
+# 在Terminal中打开并运行Python脚本
+osascript -e "tell application \"Terminal\"
+    do script \"cd '$PROJECT_PATH' && /Users/maxwellchen/.pyenv/versions/3.11.3/bin/python '$PROJECT_PATH/claude_launcher.py'\"
+    activate
+end tell"
