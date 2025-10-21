@@ -11,34 +11,63 @@ class ConversationViewer:
 
     def get_project_hash(self, project_path):
         """根据项目路径生成对应的目录名（使用模糊匹配）"""
-        # Claude Code 命名规则：盘符-路径（非ASCII字符变横杠）
-        # 例如：E:\人工智能\激励播放器 → E------------------
-        #      D:\my_pro\项目 → D--my-pro-------
+        # Claude Code 命名规则：
+        # Windows: 盘符-路径（非ASCII字符变横杠）
+        #   例如：E:\人工智能\激励播放器 → E------------------
+        #        D:\my_pro\项目 → D--my-pro-------
+        # macOS/Linux: -路径（非ASCII字符变横杠，路径分隔符变横杠）
+        #   例如：/Users/maxwellchen → -Users-maxwellchen
+        #        /Users/maxwellchen/Projects/Github/ClaudeCodeLauncher → -Users-maxwellchen-Projects-Github-ClaudeCodeLauncher
 
         if not self.claude_projects_dir.exists():
             return None
 
         # 规范化路径
         norm_path = project_path.replace("\\", "/")
-        parts = norm_path.split("/")
 
-        if not parts:
-            return None
+        # 检测操作系统
+        is_windows = os.name == 'nt'
 
-        # 提取盘符（如 C:, D:, E:）
-        drive = parts[0].upper().rstrip(":")
+        if is_windows:
+            # Windows路径处理
+            parts = norm_path.split("/")
+            if not parts:
+                return None
 
-        # 计算路径分隔符数量（层级深度）
-        path_depth = len(parts) - 1  # 减去盘符
+            # 提取盘符（如 C:, D:, E:）
+            drive = parts[0].upper().rstrip(":")
+            path_depth = len(parts) - 1  # 减去盘符
 
-        # 提取ASCII关键词（用于精确匹配）
-        ascii_keywords = []
-        for part in parts[1:]:  # 跳过盘符
-            # 先将空格替换为横杠，再提取ASCII字符
-            part_normalized = part.replace(' ', '-')
-            ascii_part = ''.join(c for c in part_normalized if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
-            if ascii_part:
-                ascii_keywords.append(ascii_part.replace('_', '-').lower())
+            # 提取ASCII关键词（用于精确匹配）
+            ascii_keywords = []
+            for part in parts[1:]:  # 跳过盘符
+                part_normalized = part.replace(' ', '-')
+                ascii_part = ''.join(c for c in part_normalized if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
+                if ascii_part:
+                    ascii_keywords.append(ascii_part.replace('_', '-').lower())
+        else:
+            # macOS/Linux路径处理
+            # 去掉开头的 /，然后将所有 / 替换为 -
+            if norm_path.startswith("/"):
+                norm_path = norm_path[1:]  # 去掉开头的 /
+
+            parts = norm_path.split("/")
+            if not parts:
+                return None
+
+            # 生成期望的目录名格式：-Users-maxwellchen-Projects-...
+            expected_prefix = "-" + "-".join(parts)
+
+            # 提取ASCII关键词（用于精确匹配）
+            ascii_keywords = []
+            for part in parts:
+                part_normalized = part.replace(' ', '-')
+                ascii_part = ''.join(c for c in part_normalized if 32 <= ord(c) < 127 and (c.isalnum() or c in ('_', '-')))
+                if ascii_part:
+                    ascii_keywords.append(ascii_part.replace('_', '-').lower())
+
+            path_depth = len(parts)
+            drive = None  # macOS没有盘符
 
         # 查找最佳匹配的目录
         best_match = None
@@ -49,14 +78,22 @@ class ConversationViewer:
             if not dir_path.is_dir():
                 continue
 
-            # 必须匹配盘符
-            if not dir_name.startswith(drive + "--"):
-                continue
+            if is_windows:
+                # Windows: 必须匹配盘符
+                if not dir_name.startswith(drive + "--"):
+                    continue
+            else:
+                # macOS/Linux: 必须以 - 开头
+                if not dir_name.startswith("-"):
+                    continue
 
             dir_lower = dir_name.lower()
 
             # 计算该目录的横杠段数（路径深度）
-            dir_depth = dir_name.count("-") - 1  # 减去盘符后的双横杠
+            if is_windows:
+                dir_depth = dir_name.count("-") - 1  # 减去盘符后的双横杠
+            else:
+                dir_depth = dir_name.count("-")
 
             # 如果有ASCII关键词，必须全部匹配
             if ascii_keywords:
@@ -73,8 +110,12 @@ class ConversationViewer:
                     best_score = score
                     best_match = dir_name
             else:
-                # 纯中文路径：匹配盘符 + 路径深度最接近的
-                depth_diff = abs(dir_depth - path_depth * 2)  # 每层约2个横杠
+                # 纯中文路径：匹配路径深度最接近的
+                if is_windows:
+                    depth_diff = abs(dir_depth - path_depth * 2)  # 每层约2个横杠
+                else:
+                    depth_diff = abs(dir_depth - path_depth)  # macOS每层1个横杠
+
                 score = 1000 - depth_diff  # 深度越接近分数越高
 
                 if score > best_score:

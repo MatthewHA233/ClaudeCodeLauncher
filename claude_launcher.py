@@ -4,13 +4,19 @@ import subprocess
 import psutil
 from datetime import datetime
 from pathlib import Path
-import msvcrt
 import sys
 import time
 import random
 from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
 from conversation_viewer import ConversationViewer
+
+# 跨平台键盘输入支持
+if os.name == 'nt':  # Windows
+    import msvcrt
+else:  # Unix/Linux/macOS
+    import termios
+    import tty
 
 init(autoreset=True)
 
@@ -54,11 +60,19 @@ class ClaudeLauncher:
         if self.config_file.exists():
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
+
+        # 根据操作系统设置默认代理路径
+        if os.name == 'nt':  # Windows
+            default_proxy_path = r"D:\Program Files\Clash Verge\clash-verge.exe"
+        else:  # macOS/Linux
+            # macOS 常见代理软件路径（Clash Verge 优先）
+            default_proxy_path = "/Applications/Clash Verge.app/Contents/MacOS/clash-verge"
+
         return {
             "recent_paths": [],
             "all_paths": [],
             "use_proxy": True,  # 默认开启代理
-            "clash_path": r"D:\Program Files\Clash Verge\clash-verge.exe",  # 默认Clash路径
+            "clash_path": default_proxy_path,
             "resume_mode": "cli"  # 历史会话选择模式: "cli" 或 "web"
         }
     
@@ -68,17 +82,26 @@ class ClaudeLauncher:
             json.dump(self.config, f, ensure_ascii=False, indent=2)
     
     def check_and_start_clash(self):
-        """检查并启动代理软件（仅在开启代理时）"""
+        """检查并启动代理软件（仅在开启代理时，跨平台支持）"""
         if not self.config.get("use_proxy", True):
             print(f"{Fore.YELLOW}⚠️  代理功能已关闭{Style.RESET_ALL}")
             return
-            
-        clash_path = self.config.get("clash_path", r"D:\Program Files\Clash Verge\clash-verge.exe")
-        
+
+        if os.name == 'nt':  # Windows
+            clash_path = self.config.get("clash_path", r"D:\Program Files\Clash Verge\clash-verge.exe")
+        else:  # macOS/Linux
+            clash_path = self.config.get("clash_path", "/Applications/Clash Verge.app/Contents/MacOS/clash-verge")
+
         if os.path.exists(clash_path):
-            subprocess.Popen([clash_path])
-            proxy_name = os.path.basename(clash_path).replace(".exe", "")
-            print(f"{Fore.GREEN}✅ {proxy_name} 已启动{Style.RESET_ALL}")
+            try:
+                subprocess.Popen([clash_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if os.name == 'nt':
+                    proxy_name = os.path.basename(clash_path).replace(".exe", "")
+                else:
+                    proxy_name = os.path.basename(clash_path)
+                print(f"{Fore.GREEN}✅ {proxy_name} 已启动{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.YELLOW}⚠️  启动代理软件失败: {e}{Style.RESET_ALL}")
         else:
             print(f"{Fore.YELLOW}⚠️  未找到代理软件: {clash_path}{Style.RESET_ALL}")
     
@@ -237,33 +260,85 @@ class ClaudeLauncher:
         print(f"{Fore.CYAN}│{Fore.WHITE}{aligned_tip}{Fore.CYAN}│{Style.RESET_ALL}")
         print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
     
+    def _wait_for_key(self):
+        """等待用户按任意键（跨平台支持）"""
+        if os.name == 'nt':  # Windows
+            msvcrt.getch()
+        else:  # Unix/Linux/macOS
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
     def get_key(self):
-        """获取按键输入"""
-        key = msvcrt.getch()
-        if key == b'\xe0':  # 特殊键前缀
+        """获取按键输入（跨平台支持）"""
+        if os.name == 'nt':  # Windows
             key = msvcrt.getch()
-            if key == b'H':  # 上箭头
-                return 'UP'
-            elif key == b'P':  # 下箭头
-                return 'DOWN'
-            elif key == b'K':  # 左箭头
-                return 'LEFT'
-            elif key == b'M':  # 右箭头
-                return 'RIGHT'
-        elif key == b'\r':  # Enter
-            return 'ENTER'
-        elif key == b'\x1b':  # ESC
-            return 'ESC'
-        elif key == b'c' or key == b'C':  # c键
-            return 'CREATE'
-        elif key == b'i' or key == b'I':  # i键
-            return 'INSTALL'
-        elif key == b'u' or key == b'U':  # u键
-            return 'UPDATE'
-        elif key == b's' or key == b'S':  # s键
-            return 'SETTINGS'
-        elif key == b'q' or key == b'Q':  # q键
-            return 'SWITCH'
+            if key == b'\xe0':  # 特殊键前缀
+                key = msvcrt.getch()
+                if key == b'H':  # 上箭头
+                    return 'UP'
+                elif key == b'P':  # 下箭头
+                    return 'DOWN'
+                elif key == b'K':  # 左箭头
+                    return 'LEFT'
+                elif key == b'M':  # 右箭头
+                    return 'RIGHT'
+            elif key == b'\r':  # Enter
+                return 'ENTER'
+            elif key == b'\x1b':  # ESC
+                return 'ESC'
+            elif key == b'c' or key == b'C':
+                return 'CREATE'
+            elif key == b'i' or key == b'I':
+                return 'INSTALL'
+            elif key == b'u' or key == b'U':
+                return 'UPDATE'
+            elif key == b's' or key == b'S':
+                return 'SETTINGS'
+            elif key == b'q' or key == b'Q':
+                return 'SWITCH'
+        else:  # Unix/Linux/macOS
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+
+                # 处理ESC序列（方向键等）
+                if ch == '\x1b':
+                    # 读取下一个字符
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == '[':
+                        ch3 = sys.stdin.read(1)
+                        if ch3 == 'A':  # 上箭头
+                            return 'UP'
+                        elif ch3 == 'B':  # 下箭头
+                            return 'DOWN'
+                        elif ch3 == 'D':  # 左箭头
+                            return 'LEFT'
+                        elif ch3 == 'C':  # 右箭头
+                            return 'RIGHT'
+                    else:
+                        return 'ESC'
+                elif ch == '\r' or ch == '\n':  # Enter
+                    return 'ENTER'
+                elif ch.lower() == 'c':
+                    return 'CREATE'
+                elif ch.lower() == 'i':
+                    return 'INSTALL'
+                elif ch.lower() == 'u':
+                    return 'UPDATE'
+                elif ch.lower() == 's':
+                    return 'SETTINGS'
+                elif ch.lower() == 'q':
+                    return 'SWITCH'
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
         return None
     
     def select_from_menu(self, options, title="", is_main_menu=False):
@@ -359,54 +434,60 @@ class ClaudeLauncher:
             self.animated_print(f"\n❌ 错误: 路径不存在: {new_path}", Fore.RED)
         
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self._wait_for_key()
     
     def get_input_with_esc(self):
-        """支持ESC键和中文输入的函数"""
-        import threading
-        import queue
-        
-        result_queue = queue.Queue()
-        input_text = ""
-        
-        def input_thread():
-            try:
-                user_input = input()
-                result_queue.put(('input', user_input))
-            except:
-                result_queue.put(('error', None))
-        
-        # 启动输入线程
-        thread = threading.Thread(target=input_thread, daemon=True)
-        thread.start()
-        
-        # 检查ESC键
-        while thread.is_alive():
-            if msvcrt.kbhit():
-                char = msvcrt.getch()
-                if char == b'\x1b':  # ESC键
-                    print("\n取消输入...")
-                    return None
-            
-            # 检查是否有输入完成
+        """支持ESC键和中文输入的函数（跨平台支持）"""
+        if os.name == 'nt':  # Windows 版本
+            import threading
+            import queue
+
+            result_queue = queue.Queue()
+
+            def input_thread():
+                try:
+                    user_input = input()
+                    result_queue.put(('input', user_input))
+                except:
+                    result_queue.put(('error', None))
+
+            # 启动输入线程
+            thread = threading.Thread(target=input_thread, daemon=True)
+            thread.start()
+
+            # 检查ESC键
+            while thread.is_alive():
+                if msvcrt.kbhit():
+                    char = msvcrt.getch()
+                    if char == b'\x1b':  # ESC键
+                        print("\n取消输入...")
+                        return None
+
+                # 检查是否有输入完成
+                try:
+                    event_type, data = result_queue.get(timeout=0.1)
+                    if event_type == 'input':
+                        return data
+                    elif event_type == 'error':
+                        return None
+                except queue.Empty:
+                    continue
+
+            # 如果线程结束但没有结果，返回None
             try:
                 event_type, data = result_queue.get(timeout=0.1)
                 if event_type == 'input':
                     return data
-                elif event_type == 'error':
-                    return None
             except queue.Empty:
-                continue
-        
-        # 如果线程结束但没有结果，返回None
-        try:
-            event_type, data = result_queue.get(timeout=0.1)
-            if event_type == 'input':
-                return data
-        except queue.Empty:
-            pass
-        
-        return None
+                pass
+
+            return None
+        else:  # Unix/Linux/macOS 版本（简化版，直接使用标准 input）
+            try:
+                return input()
+            except (KeyboardInterrupt, EOFError):
+                print("\n取消输入...")
+                return None
     
     def get_parent_directories(self):
         """获取所有会话的父级目录并去重"""
@@ -544,7 +625,7 @@ class ClaudeLauncher:
             print(f"{Fore.RED}❌ 安装出错: {e}{Style.RESET_ALL}")
         
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self._wait_for_key()
     
     def update_claude_code(self):
         """更新Claude Code"""
@@ -586,7 +667,7 @@ class ClaudeLauncher:
             print(f"{Fore.RED}❌ 更新出错: {e}{Style.RESET_ALL}")
         
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self._wait_for_key()
     
     def show_settings(self):
         """显示设置菜单"""
@@ -635,44 +716,53 @@ class ClaudeLauncher:
                 time.sleep(1)
     
     def set_proxy_path(self):
-        """设置代理软件路径"""
+        """设置代理软件路径（跨平台支持）"""
         self.clear_screen()
         self.print_gradient_text("\n╔" + "═" * 60 + "╗")
         self.print_gradient_text("║" + "设置代理软件路径".center(55) + "║")
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
-        
-        current_path = self.config.get("clash_path", r"D:\Program Files\Clash Verge\clash-verge.exe")
+
+        if os.name == 'nt':  # Windows
+            current_path = self.config.get("clash_path", r"D:\Program Files\Clash Verge\clash-verge.exe")
+            example_path = "D:\\Program Files\\v2rayN\\v2rayN.exe"
+        else:  # macOS/Linux
+            current_path = self.config.get("clash_path", "/Applications/Clash Verge.app/Contents/MacOS/clash-verge")
+            example_path = "/Applications/Surge.app/Contents/MacOS/Surge"
+
         print(f"{Fore.YELLOW}当前路径: {Fore.WHITE}{current_path}{Style.RESET_ALL}\n")
-        
+
         print(f"{Fore.CYAN}📝 请输入代理软件完整路径{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}(例如: D:\\Program Files\\v2rayN\\v2rayN.exe){Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}(例如: {example_path}){Style.RESET_ALL}")
         print(f"{Fore.WHITE}(直接按Enter保持当前路径不变){Style.RESET_ALL}")
         print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
         new_path = input().strip()
-        
+
         # 如果用户直接按Enter，保持原路径
         if not new_path:
             print(f"\n{Fore.CYAN}路径保持不变{Style.RESET_ALL}")
             time.sleep(1)
             return
-        
+
         # 验证路径
         print(f"{Fore.CYAN}⚡ 验证路径...{Style.RESET_ALL}")
-        
-        if os.path.exists(new_path) and new_path.lower().endswith('.exe'):
-            self.config["clash_path"] = new_path
-            self.save_config()
-            proxy_name = os.path.basename(new_path).replace(".exe", "")
-            print(f"\n{Fore.GREEN}✅ 代理软件路径已更新为: {proxy_name}{Style.RESET_ALL}")
-            print(f"{Fore.WHITE}{new_path}{Style.RESET_ALL}")
+
+        if os.path.exists(new_path):
+            if os.name == 'nt' and not new_path.lower().endswith('.exe'):
+                print(f"\n{Fore.RED}❌ 错误: Windows下请选择.exe文件{Style.RESET_ALL}")
+            else:
+                self.config["clash_path"] = new_path
+                self.save_config()
+                if os.name == 'nt':
+                    proxy_name = os.path.basename(new_path).replace(".exe", "")
+                else:
+                    proxy_name = os.path.basename(new_path)
+                print(f"\n{Fore.GREEN}✅ 代理软件路径已更新为: {proxy_name}{Style.RESET_ALL}")
+                print(f"{Fore.WHITE}{new_path}{Style.RESET_ALL}")
         else:
-            if not os.path.exists(new_path):
-                print(f"\n{Fore.RED}❌ 错误: 文件不存在{Style.RESET_ALL}")
-            elif not new_path.lower().endswith('.exe'):
-                print(f"\n{Fore.RED}❌ 错误: 请选择.exe文件{Style.RESET_ALL}")
-        
+            print(f"\n{Fore.RED}❌ 错误: 文件不存在{Style.RESET_ALL}")
+
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self._wait_for_key()
 
     def switch_to_codex_launcher(self):
         """切换到Codex启动器"""
@@ -700,35 +790,47 @@ class ClaudeLauncher:
         self.config["recent_paths"] = self.config["recent_paths"][:5]
     
     def execute_claude_command(self, path, command):
-        """执行Claude命令"""
+        """执行Claude命令（跨平台支持）"""
         self.clear_screen()
         print(f"{Fore.CYAN}🚀 启动 Claude Code...{Style.RESET_ALL}")
-        
-        drive = path[0] + ":"
-        
+
         # 构建命令序列
-        commands = [
-            drive,
-            f'cd "{path}"'
-        ]
-        
-        # 只有在开启代理时才设置代理环境变量
-        if self.config.get("use_proxy", True):
-            commands.extend([
-                f'set https_proxy={self.proxy_url}',
-                f'set http_proxy={self.proxy_url}'
-            ])
-            proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
-        else:
-            proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
-        
+        commands = []
+
+        if os.name == 'nt':  # Windows
+            drive = path[0] + ":"
+            commands.append(drive)
+            commands.append(f'cd "{path}"')
+
+            # 只有在开启代理时才设置代理环境变量
+            if self.config.get("use_proxy", True):
+                commands.extend([
+                    f'set https_proxy={self.proxy_url}',
+                    f'set http_proxy={self.proxy_url}'
+                ])
+                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
+            else:
+                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
+        else:  # Unix/Linux/macOS
+            commands.append(f'cd "{path}"')
+
+            # 只有在开启代理时才设置代理环境变量
+            if self.config.get("use_proxy", True):
+                commands.extend([
+                    f'export https_proxy={self.proxy_url}',
+                    f'export http_proxy={self.proxy_url}'
+                ])
+                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
+            else:
+                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
+
         commands.append(command)
-        
+
         # 显示执行信息
         print(f"\n{Fore.GREEN}📍 工作目录: {Fore.WHITE}{path}{Style.RESET_ALL}")
         print(f"{Fore.BLUE}🔧 执行命令: {Fore.WHITE}{command}{Style.RESET_ALL}")
         print(f"{proxy_info}\n")
-        
+
         # 执行命令
         cmd_string = " && ".join(commands)
         subprocess.run(cmd_string, shell=True)
@@ -839,73 +941,147 @@ class ClaudeLauncher:
                     self.save_config()
                     self.handle_path_selection(path)
     
+    def detect_proxy_apps_macos(self):
+        """自动检测 macOS 下已安装的代理软件"""
+        proxy_apps = {
+            "Clash Verge": "/Applications/Clash Verge.app/Contents/MacOS/clash-verge",
+            "ClashX": "/Applications/ClashX.app/Contents/MacOS/ClashX",
+            "ClashX Pro": "/Applications/ClashX Pro.app/Contents/MacOS/ClashX Pro",
+            "Surge": "/Applications/Surge.app/Contents/MacOS/Surge",
+            "Surge 5": "/Applications/Surge 5.app/Contents/MacOS/Surge 5",
+            "V2rayU": "/Applications/V2rayU.app/Contents/MacOS/V2rayU",
+            "Shadowrocket": "/Applications/Shadowrocket.app/Contents/MacOS/Shadowrocket",
+            "Qv2ray": "/Applications/Qv2ray.app/Contents/MacOS/qv2ray",
+            "NekoRay": "/Applications/nekoray.app/Contents/MacOS/nekoray",
+        }
+
+        found_apps = []
+        for name, path in proxy_apps.items():
+            if os.path.exists(path):
+                found_apps.append((name, path))
+
+        return found_apps
+
     def first_time_setup(self):
-        """首次运行设置引导"""
+        """首次运行设置引导（跨平台支持）"""
         self.clear_screen()
         self.print_gradient_text("\n╔" + "═" * 60 + "╗")
         self.print_gradient_text("║" + "欢迎使用 Claude Code 启动器".center(54) + "║")
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
-        
+
         print(f"{Fore.YELLOW}🎉 首次运行，让我们先进行一些基础设置！{Style.RESET_ALL}\n")
-        
-        # 引导设置代理软件路径
-        default_path = r"D:\Program Files\Clash Verge\clash-verge.exe"
-        
-        print(f"{Fore.CYAN}📡 代理软件设置{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}请输入你的代理软件路径（支持 Clash、v2rayN、Shadowsocks 等）{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}默认: {default_path}{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}(直接按Enter使用默认路径){Style.RESET_ALL}")
-        print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
-        
-        proxy_path = input().strip()
-        if not proxy_path:
-            proxy_path = default_path
-        
+
+        proxy_path = None
+
+        # 根据操作系统设置代理
+        if os.name == 'nt':  # Windows
+            default_path = r"D:\Program Files\Clash Verge\clash-verge.exe"
+            proxy_examples = "Clash、v2rayN、Shadowsocks"
+
+            print(f"{Fore.CYAN}📡 代理软件设置{Style.RESET_ALL}")
+            print(f"{Fore.WHITE}请输入你的代理软件路径（支持 {proxy_examples} 等）{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}默认: {default_path}{Style.RESET_ALL}")
+            print(f"{Fore.WHITE}(直接按Enter使用默认路径){Style.RESET_ALL}")
+            print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
+
+            proxy_path = input().strip()
+            if not proxy_path:
+                proxy_path = default_path
+
+        else:  # macOS/Linux
+            # 自动检测已安装的代理软件
+            print(f"{Fore.CYAN}🔍 正在检测已安装的代理软件...{Style.RESET_ALL}\n")
+            found_apps = self.detect_proxy_apps_macos()
+
+            if len(found_apps) == 0:
+                # 没有检测到，手动输入
+                print(f"{Fore.YELLOW}⚠️  未检测到常见代理软件{Style.RESET_ALL}")
+                print(f"{Fore.WHITE}请手动输入代理软件路径，或直接按 Enter 跳过{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
+                proxy_path = input().strip()
+                if not proxy_path:
+                    proxy_path = "/Applications/Clash Verge.app/Contents/MacOS/clash-verge"  # 默认值
+
+            elif len(found_apps) == 1:
+                # 只检测到一个，自动使用
+                name, path = found_apps[0]
+                print(f"{Fore.GREEN}✅ 检测到代理软件: {name}{Style.RESET_ALL}")
+                print(f"{Fore.WHITE}   路径: {path}{Style.RESET_ALL}")
+                proxy_path = path
+                time.sleep(1)
+
+            else:
+                # 检测到多个，让用户选择
+                print(f"{Fore.GREEN}✅ 检测到 {len(found_apps)} 个代理软件:{Style.RESET_ALL}\n")
+                options = [f"{name}" for name, _ in found_apps]
+                options.append("手动输入路径")
+
+                choice = self.select_from_menu(options, "🌐 选择代理软件")
+
+                if choice == -1 or choice == len(options) - 1:  # ESC 或手动输入
+                    print(f"\n{Fore.CYAN}请输入代理软件完整路径:{Style.RESET_ALL}")
+                    print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
+                    proxy_path = input().strip()
+                    if not proxy_path:
+                        proxy_path = found_apps[0][1]  # 使用第一个作为默认
+                else:
+                    proxy_path = found_apps[choice][1]
+
         # 验证并保存路径
-        if os.path.exists(proxy_path) and proxy_path.lower().endswith('.exe'):
+        path_valid = False
+        if os.name == 'nt':
+            path_valid = os.path.exists(proxy_path) and proxy_path.lower().endswith('.exe')
+        else:
+            path_valid = os.path.exists(proxy_path)
+
+        if path_valid:
             self.config["clash_path"] = proxy_path
-            proxy_name = os.path.basename(proxy_path).replace(".exe", "")
+            if os.name == 'nt':
+                proxy_name = os.path.basename(proxy_path).replace(".exe", "")
+            else:
+                proxy_name = os.path.basename(proxy_path)
             print(f"\n{Fore.GREEN}✅ 代理软件设置成功: {proxy_name}{Style.RESET_ALL}")
         else:
-            print(f"\n{Fore.YELLOW}⚠️  路径无效，使用默认设置{Style.RESET_ALL}")
-            self.config["clash_path"] = default_path
-        
+            print(f"\n{Fore.YELLOW}⚠️  路径无效，将在需要时手动配置{Style.RESET_ALL}")
+            self.config["clash_path"] = proxy_path
+
         # 询问是否默认开启代理
         print(f"\n{Fore.CYAN}🌐 是否默认开启代理功能？{Style.RESET_ALL}")
         print(f"{Fore.WHITE}y/Y = 开启 (推荐)  n/N = 关闭{Style.RESET_ALL}")
         print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="")
-        
+
         proxy_choice = input().strip().lower()
         self.config["use_proxy"] = proxy_choice not in ['n', 'no']
-        
+
         status = "开启" if self.config["use_proxy"] else "关闭"
         print(f"\n{Fore.GREEN}✅ 代理功能: {status}{Style.RESET_ALL}")
-        
+
         # 保存配置
         self.save_config()
-        
+
         print(f"\n{Fore.CYAN}🎯 设置完成！现在可以开始使用了{Style.RESET_ALL}")
         print(f"{Fore.WHITE}提示: 随时可按 S 键进入设置修改配置{Style.RESET_ALL}")
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self._wait_for_key()
 
     def run(self):
-        """运行启动器"""
+        """运行启动器（跨平台支持）"""
         try:
-            # 设置控制台标题
-            os.system("title Claude Code Launcher")
-            
+            # 设置控制台标题（仅Windows）
+            if os.name == 'nt':
+                os.system("title Claude Code Launcher")
+
             # 检查是否首次运行或代理路径无效
             clash_path = self.config.get("clash_path")
             if not clash_path or not os.path.exists(clash_path):
                 self.first_time_setup()
-            
+
             # 检查并启动代理软件
             self.check_and_start_clash()
-            
+
             # 显示主菜单
             self.main_menu()
-            
+
             # 退出提示
             self.clear_screen()
             print(f"\n{Fore.CYAN}👋 感谢使用 Claude Code 启动器！{Style.RESET_ALL}")
@@ -916,7 +1092,7 @@ class ClaudeLauncher:
         except Exception as e:
             print(f"\n{Fore.RED}❌ 发生错误: {e}{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键退出...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self._wait_for_key()
 
 if __name__ == "__main__":
     launcher = ClaudeLauncher()

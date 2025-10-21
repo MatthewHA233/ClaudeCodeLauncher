@@ -7,11 +7,18 @@ import os
 import json
 import subprocess
 import pyperclip
-import msvcrt
 import time
 from datetime import datetime
 from pathlib import Path
 from colorama import init, Fore, Back, Style
+
+# 跨平台键盘输入支持
+if os.name == 'nt':  # Windows
+    import msvcrt
+else:  # Unix/Linux/macOS
+    import termios
+    import tty
+    import sys
 
 init(autoreset=True)
 
@@ -591,23 +598,8 @@ Git Diff详情：
         return current_commits
 
     def get_key_input(self):
-        """获取键盘输入"""
-        key = msvcrt.getch()
-        if key == b'\xe0':  # 特殊键前缀
-            key = msvcrt.getch()
-            if key == b'H':  # 上箭头
-                return 'UP'
-            elif key == b'P':  # 下箭头
-                return 'DOWN'
-            elif key == b'K':  # 左箭头
-                return 'LEFT'
-            elif key == b'M':  # 右箭头
-                return 'RIGHT'
-        elif key == b'\r':  # Enter
-            return 'ENTER'
-        elif key == b'\x1b':  # ESC
-            return 'ESC'
-        return None
+        """获取键盘输入（使用launcher的跨平台实现）"""
+        return self.launcher.get_key()
 
     def select_ai_agent(self):
         """选择AI代理"""
@@ -635,7 +627,7 @@ Git Diff详情：
         if not commit_details:
             print(f"{Fore.RED}❌ 无法获取提交详情{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self.launcher._wait_for_key()
             return
 
         # 选择AI代理
@@ -671,7 +663,7 @@ Git Diff详情：
             print(f"\n{Fore.RED}❌ 语境材料生成失败{Style.RESET_ALL}")
 
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self.launcher._wait_for_key()
 
     def view_existing_context(self, path, commit_info):
         """查看已有的语境材料"""
@@ -702,7 +694,7 @@ Git Diff详情：
             print(f"{Fore.RED}❌ 未找到语境材料{Style.RESET_ALL}")
 
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self.launcher._wait_for_key()
 
     def run_commit_organizer(self, path):
         """运行git提交整理器主界面"""
@@ -712,7 +704,7 @@ Git Diff详情：
             print(f"{Fore.RED}❌ 该目录不是git仓库{Style.RESET_ALL}")
             print(f"{Fore.CYAN}路径: {path}{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self.launcher._wait_for_key()
             return
 
         # 获取git提交历史
@@ -722,7 +714,7 @@ Git Diff详情：
             print(f"{Fore.RED}❌ 未找到git提交记录{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}请确认该目录是git仓库且有提交记录{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self.launcher._wait_for_key()
             return
 
         selected_index = 0
@@ -776,7 +768,7 @@ Git Diff详情：
             self.launcher.clear_screen()
             print(f"{Fore.RED}❌ 未找到git提交记录{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self.launcher._wait_for_key()
             return
 
         processed_count = sum(1 for commit in commits if self.is_commit_processed(path, commit['hash']))
@@ -798,4 +790,4 @@ Git Diff详情：
             print(f"{Fore.YELLOW}📈 完成度: {Fore.WHITE}{percentage:.1f}%{Style.RESET_ALL}")
 
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-        msvcrt.getch()
+        self.launcher._wait_for_key()
