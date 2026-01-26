@@ -227,6 +227,9 @@ class ClaudeLauncher:
                 elif "取消" in option:
                     color = Fore.RED
                     icon = "❌"
+                elif "删除" in option:
+                    color = Fore.RED
+                    icon = "🗑️"
                 else:
                     color = Fore.GREEN
                     icon = "📁"
@@ -255,7 +258,7 @@ class ClaudeLauncher:
         
         # 底部提示
         print(f"\n{Fore.CYAN}╭────────────────────────────────────────────────────────────╮{Style.RESET_ALL}")
-        tip_content = "↑↓ 选择 Enter 确认 C 创建 I 安装 U 更新 S 设置 Q 切换 ←→ 翻页"
+        tip_content = "↑↓选择 Enter确认 C创建 I安装 U更新 S设置 W服务 Q切换 ←→翻页"
         aligned_tip = self.center_text(tip_content, 60)
         print(f"{Fore.CYAN}│{Fore.WHITE}{aligned_tip}{Fore.CYAN}│{Style.RESET_ALL}")
         print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
@@ -301,6 +304,8 @@ class ClaudeLauncher:
                 return 'SETTINGS'
             elif key == b'q' or key == b'Q':
                 return 'SWITCH'
+            elif key == b'w' or key == b'W':
+                return 'SERVER'
         else:  # Unix/Linux/macOS
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
@@ -336,6 +341,8 @@ class ClaudeLauncher:
                     return 'SETTINGS'
                 elif ch.lower() == 'q':
                     return 'SWITCH'
+                elif ch.lower() == 'w':
+                    return 'SERVER'
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -367,6 +374,8 @@ class ClaudeLauncher:
                 return -7  # 设置
             elif key == 'SWITCH' and is_main_menu:
                 return -8  # 切换启动器
+            elif key == 'SERVER' and is_main_menu:
+                return -9  # 启动服务端
             elif key == 'LEFT' and is_main_menu:
                 return -3  # 上一页
             elif key == 'RIGHT' and is_main_menu:
@@ -764,6 +773,57 @@ class ClaudeLauncher:
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
         self._wait_for_key()
 
+    def start_websocket_server(self):
+        """启动 WebSocket 服务端供手机客户端连接"""
+        self.clear_screen()
+        self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+        centered_text = "║" + self.center_text("启动 WebSocket 服务端", 57) + "║"
+        self.print_gradient_text(centered_text)
+        self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+
+        # 获取当前脚本目录
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        server_path = os.path.join(current_dir, "claude_server.py")
+
+        if not os.path.exists(server_path):
+            print(f"{Fore.RED}❌ 未找到服务端文件: {server_path}{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
+            self._wait_for_key()
+            return
+
+        # 检查 websockets 是否安装
+        try:
+            import websockets
+        except ImportError:
+            print(f"{Fore.YELLOW}⚠️  正在安装 websockets 依赖...{Style.RESET_ALL}")
+            subprocess.run([sys.executable, "-m", "pip", "install", "websockets"], check=True)
+            print(f"{Fore.GREEN}✅ websockets 安装完成{Style.RESET_ALL}\n")
+
+        # 获取局域网 IP
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except:
+            local_ip = "127.0.0.1"
+
+        print(f"{Fore.GREEN}📱 手机客户端连接信息:{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}   局域网地址: ws://{local_ip}:8765{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}   本地地址:   ws://127.0.0.1:8765{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}💡 提示: 按 Ctrl+C 停止服务器{Style.RESET_ALL}\n")
+        print(f"{Fore.CYAN}{'─' * 50}{Style.RESET_ALL}")
+
+        # 运行服务端
+        try:
+            subprocess.run([sys.executable, server_path])
+        except KeyboardInterrupt:
+            print(f"\n{Fore.YELLOW}⚠️  服务器已停止{Style.RESET_ALL}")
+
+        print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
+        self._wait_for_key()
+
     def switch_to_codex_launcher(self):
         """切换到Codex启动器"""
         self.clear_screen()
@@ -845,6 +905,7 @@ class ClaudeLauncher:
                 "开始新会话 (claude)",
                 f"选择历史会话 ({resume_mode_text})",
                 "整理git提交作为学习材料",
+                "删除此项目记录",
                 "返回主菜单"
             ]
 
@@ -854,7 +915,7 @@ class ClaudeLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 4:  # ESC或返回主菜单
+            if choice == -1 or choice == 5:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_claude_command(path, "claude -c")
@@ -868,7 +929,44 @@ class ClaudeLauncher:
                     self.execute_claude_command(path, "claude --resume")
             elif choice == 3:
                 self.git_organizer.run_commit_organizer(path)
-    
+            elif choice == 4:
+                # 删除项目记录
+                if self.delete_project_record(path):
+                    break  # 删除成功后返回主菜单
+
+    def delete_project_record(self, path):
+        """删除项目记录"""
+        project_name = os.path.basename(path) or path
+
+        # 显示确认菜单
+        options = [
+            "确认删除",
+            "取消"
+        ]
+
+        choice = self.select_from_menu(options, f"🗑️ 确认删除项目「{project_name}」?")
+
+        if choice == 0:  # 确认删除
+            # 从 all_paths 中删除
+            if path in self.config["all_paths"]:
+                self.config["all_paths"].remove(path)
+
+            # 从 recent_paths 中删除
+            if path in self.config["recent_paths"]:
+                self.config["recent_paths"].remove(path)
+
+            # 保存配置
+            self.save_config()
+
+            self.clear_screen()
+            print(f"\n{Fore.GREEN}✅ 项目「{project_name}」已从记录中删除{Style.RESET_ALL}")
+            print(f"{Fore.WHITE}💡 注意: 这只删除了记录，项目文件仍保留在原位置{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
+            self._wait_for_key()
+            return True
+
+        return False
+
     def get_all_paths(self):
         """获取所有路径，最近使用的在前"""
         all_paths = self.config["recent_paths"][:]
@@ -930,6 +1028,8 @@ class ClaudeLauncher:
             elif choice == -8:  # Q键切换
                 self.switch_to_codex_launcher()
                 break  # 切换后退出当前启动器
+            elif choice == -9:  # W键启动服务端
+                self.start_websocket_server()
             else:  # 选择了某个路径
                 # 提取路径
                 selected_option = options[choice]
