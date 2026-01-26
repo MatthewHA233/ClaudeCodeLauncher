@@ -1,0 +1,4 @@
+#!/bin/bash
+# macOS 全局命令：一键启动 Claude Launcher
+cd "$(dirname "$0")"
+python3 claude_launcher.py
