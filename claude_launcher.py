@@ -654,46 +654,50 @@ class ClaudeLauncher:
         self.print_gradient_text(centered_text)
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
-        print(f"{Fore.YELLOW}🔄 正在更新 Claude Code...{Style.RESET_ALL}")
-
-        try:
-            if os.name == 'nt':  # Windows
-                print(f"{Fore.CYAN}执行命令: npm install -g @anthropic-ai/claude-code@latest{Style.RESET_ALL}\n")
+        if os.name != 'nt':  # macOS/Linux
+            print(f"{Fore.GREEN}✅ 原生安装已自动后台更新，无需手动操作！{Style.RESET_ALL}")
+            # 显示当前版本
+            try:
+                version_result = subprocess.run(
+                    ["claude", "--version"],
+                    capture_output=True,
+                    text=True
+                )
+                if version_result.returncode == 0:
+                    print(f"\n{Fore.CYAN}当前版本: {version_result.stdout.strip()}{Style.RESET_ALL}")
+            except Exception:
+                pass
+        else:  # Windows
+            print(f"{Fore.YELLOW}🔄 正在更新 Claude Code...{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}执行命令: npm install -g @anthropic-ai/claude-code@latest{Style.RESET_ALL}\n")
+            try:
                 result = subprocess.run(
                     ["npm", "install", "-g", "@anthropic-ai/claude-code@latest"],
                     capture_output=True,
                     text=True,
                     shell=True
                 )
-            else:  # macOS/Linux
-                print(f"{Fore.CYAN}执行命令: curl -fsSL https://claude.ai/install.sh | bash{Style.RESET_ALL}\n")
-                result = subprocess.run(
-                    ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"],
-                    capture_output=True,
-                    text=True
-                )
 
-            if result.returncode == 0:
-                print(f"{Fore.GREEN}✅ Claude Code 更新成功！{Style.RESET_ALL}")
-                if result.stdout:
-                    print(f"{Fore.WHITE}{result.stdout}{Style.RESET_ALL}")
+                if result.returncode == 0:
+                    print(f"{Fore.GREEN}✅ Claude Code 更新成功！{Style.RESET_ALL}")
+                    if result.stdout:
+                        print(f"{Fore.WHITE}{result.stdout}{Style.RESET_ALL}")
 
-                # 显示版本信息
-                version_result = subprocess.run(
-                    ["claude", "--version"],
-                    capture_output=True,
-                    text=True,
-                    shell=(os.name == 'nt')
-                )
-                if version_result.returncode == 0:
-                    print(f"\n{Fore.CYAN}当前版本: {version_result.stdout.strip()}{Style.RESET_ALL}")
-            else:
-                print(f"{Fore.RED}❌ 更新失败{Style.RESET_ALL}")
-                if result.stderr:
-                    print(f"{Fore.RED}{result.stderr}{Style.RESET_ALL}")
+                    version_result = subprocess.run(
+                        ["claude", "--version"],
+                        capture_output=True,
+                        text=True,
+                        shell=True
+                    )
+                    if version_result.returncode == 0:
+                        print(f"\n{Fore.CYAN}当前版本: {version_result.stdout.strip()}{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.RED}❌ 更新失败{Style.RESET_ALL}")
+                    if result.stderr:
+                        print(f"{Fore.RED}{result.stderr}{Style.RESET_ALL}")
 
-        except Exception as e:
-            print(f"{Fore.RED}❌ 更新出错: {e}{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}❌ 更新出错: {e}{Style.RESET_ALL}")
 
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
         self._wait_for_key()
