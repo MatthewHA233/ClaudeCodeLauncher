@@ -613,6 +613,9 @@ class ClaudeLauncher:
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
         print(f"{Fore.YELLOW}🔧 正在安装 Claude Code...{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}🌐 使用代理: {self.proxy_url}{Style.RESET_ALL}")
+
+        proxy_env = {**os.environ, "HTTP_PROXY": self.proxy_url, "HTTPS_PROXY": self.proxy_url}
 
         try:
             if os.name == 'nt':  # Windows
@@ -621,14 +624,16 @@ class ClaudeLauncher:
                     ["npm", "install", "-g", "@anthropic-ai/claude-code@latest"],
                     capture_output=True,
                     text=True,
-                    shell=True
+                    shell=True,
+                    env=proxy_env
                 )
             else:  # macOS/Linux
                 print(f"{Fore.CYAN}执行命令: curl -fsSL https://claude.ai/install.sh | bash{Style.RESET_ALL}\n")
                 result = subprocess.run(
                     ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=proxy_env
                 )
 
             if result.returncode == 0:
@@ -668,6 +673,7 @@ class ClaudeLauncher:
             except Exception:
                 pass
         else:  # Windows
+            proxy_env = {**os.environ, "HTTP_PROXY": self.proxy_url, "HTTPS_PROXY": self.proxy_url}
             print(f"{Fore.YELLOW}🔄 正在更新 Claude Code...{Style.RESET_ALL}")
             print(f"{Fore.CYAN}执行命令: npm install -g @anthropic-ai/claude-code@latest{Style.RESET_ALL}\n")
             try:
@@ -675,7 +681,8 @@ class ClaudeLauncher:
                     ["npm", "install", "-g", "@anthropic-ai/claude-code@latest"],
                     capture_output=True,
                     text=True,
-                    shell=True
+                    shell=True,
+                    env=proxy_env
                 )
 
                 if result.returncode == 0:
