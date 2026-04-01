@@ -675,6 +675,7 @@ class ClaudeLauncher:
         else:  # Windows
             proxy_env = {**os.environ, "HTTP_PROXY": self.proxy_url, "HTTPS_PROXY": self.proxy_url}
             print(f"{Fore.YELLOW}🔄 正在更新 Claude Code...{Style.RESET_ALL}")
+            print(f"{Fore.MAGENTA}🌐 使用代理: {self.proxy_url}{Style.RESET_ALL}")
             print(f"{Fore.CYAN}执行命令: npm install -g @anthropic-ai/claude-code@latest{Style.RESET_ALL}\n")
             try:
                 result = subprocess.run(
