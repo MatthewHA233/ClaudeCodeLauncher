@@ -720,8 +720,12 @@ class ClaudeLauncher:
     def _get_claude_account(self):
         """获取当前 Claude Code 登录账号信息，失败返回 None"""
         try:
+            if os.name == 'nt':
+                run_args = ["claude", "auth", "status", "--json"]
+            else:
+                run_args = "claude auth status --json"
             result = subprocess.run(
-                ["claude", "auth", "status", "--json"],
+                run_args,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -853,13 +857,19 @@ class ClaudeLauncher:
         print(f"{Fore.CYAN}执行命令: claude --print --no-session-persistence \"你好\"{Style.RESET_ALL}\n")
 
         try:
+            if os.name == 'nt':
+                run_args = ["claude", "--print", "--no-session-persistence", "你好"]
+                use_shell = True
+            else:
+                run_args = 'claude --print --no-session-persistence "你好"'
+                use_shell = True
             result = subprocess.run(
-                ["claude", "--print", "--no-session-persistence", "你好"],
+                run_args,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                shell=True,
+                shell=use_shell,
                 env=proxy_env,
                 cwd=os.path.expanduser("~"),
                 timeout=180
