@@ -1,8 +1,9 @@
 import os
 import json
+import re
 import subprocess
 import psutil
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import time
@@ -258,7 +259,7 @@ class ClaudeLauncher:
         
         # 底部提示
         print(f"\n{Fore.CYAN}╭────────────────────────────────────────────────────────────╮{Style.RESET_ALL}")
-        tip_content = "↑↓选择 Enter确认 C创建 I安装 U更新 S设置 W服务 Q切换 ←→翻页"
+        tip_content = "↑↓选 Enter确认 C创建 I安装 U更新 T定时 S设置 W服务 Q切换 ←→页"
         aligned_tip = self.center_text(tip_content, 60)
         print(f"{Fore.CYAN}│{Fore.WHITE}{aligned_tip}{Fore.CYAN}│{Style.RESET_ALL}")
         print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
@@ -306,6 +307,8 @@ class ClaudeLauncher:
                 return 'SWITCH'
             elif key == b'w' or key == b'W':
                 return 'SERVER'
+            elif key == b't' or key == b'T':
+                return 'TIMED'
         else:  # Unix/Linux/macOS
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
@@ -343,6 +346,8 @@ class ClaudeLauncher:
                     return 'SWITCH'
                 elif ch.lower() == 'w':
                     return 'SERVER'
+                elif ch.lower() == 't':
+                    return 'TIMED'
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -376,6 +381,8 @@ class ClaudeLauncher:
                 return -8  # 切换启动器
             elif key == 'SERVER' and is_main_menu:
                 return -9  # 启动服务端
+            elif key == 'TIMED' and is_main_menu:
+                return -10  # 定时激活
             elif key == 'LEFT' and is_main_menu:
                 return -3  # 上一页
             elif key == 'RIGHT' and is_main_menu:
@@ -709,7 +716,170 @@ class ClaudeLauncher:
 
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
         self._wait_for_key()
-    
+
+    def _get_claude_account(self):
+        """获取当前 Claude Code 登录账号信息，失败返回 None"""
+        try:
+            result = subprocess.run(
+                ["claude", "auth", "status", "--json"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=True,
+                timeout=10
+            )
+            if result.returncode != 0:
+                return None
+            data = json.loads((result.stdout or "").strip())
+            if not data.get("loggedIn"):
+                return None
+            email = data.get("email")
+            plan = data.get("subscriptionType")
+            if email and plan:
+                return f"{email} ({plan})"
+            return email or data.get("orgName")
+        except Exception:
+            return None
+
+    def _check_esc_nonblocking(self):
+        """非阻塞检测 ESC 键（跨平台支持）"""
+        if os.name == 'nt':
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                if ch == b'\x1b':
+                    return True
+            return False
+        else:
+            import select
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                tty.setcbreak(fd)
+                rlist, _, _ = select.select([sys.stdin], [], [], 0)
+                if rlist:
+                    ch = sys.stdin.read(1)
+                    if ch == '\x1b':
+                        return True
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            return False
+
+    def timed_activation(self):
+        """定时激活 - 到指定时间执行一次 claude 临时对话（不存记录）"""
+        # 输入时间，格式错则强制重输
+        target_dt = None
+        while target_dt is None:
+            self.clear_screen()
+            self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+            centered = "║" + self.center_text("定时 Claude 激活", 57) + "║"
+            self.print_gradient_text(centered)
+            self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+
+            print(f"{Fore.CYAN}⏰ 请输入触发时间 (格式: HH:MM，本地时区){Style.RESET_ALL}")
+            print(f"{Fore.WHITE}💡 例如 09:30 或 23:05；按 ESC 返回主菜单{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="", flush=True)
+
+            raw = self.get_input_with_esc()
+            if raw is None:
+                return
+            raw = raw.strip()
+
+            m = re.match(r'^(\d{1,2}):(\d{1,2})$', raw)
+            if not m:
+                print(f"\n{Fore.RED}❌ 格式错误，请使用 HH:MM 格式{Style.RESET_ALL}")
+                time.sleep(1.0)
+                continue
+            hh, mm = int(m.group(1)), int(m.group(2))
+            if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                print(f"\n{Fore.RED}❌ 时间范围错误 (小时 0-23, 分钟 0-59){Style.RESET_ALL}")
+                time.sleep(1.0)
+                continue
+
+            now = datetime.now()
+            target_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if target_dt <= now:
+                target_dt = target_dt + timedelta(days=1)
+
+        # 倒计时等待
+        proxy_on = self.config.get("use_proxy", True)
+        account_info = self._get_claude_account()
+        self.clear_screen()
+        self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+        centered = "║" + self.center_text("定时 Claude 激活 - 等待中", 57) + "║"
+        self.print_gradient_text(centered)
+        self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+        print(f"{Fore.CYAN}🎯 目标时间: {Fore.YELLOW}{target_dt.strftime('%Y-%m-%d %H:%M')}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}👤 当前账号: {Fore.WHITE}{account_info if account_info else '未登录或获取失败'}{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}🌐 代理: {Fore.WHITE}{self.proxy_url if proxy_on else '已关闭'}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}📂 工作目录: {Fore.WHITE}{os.path.expanduser('~')}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}💡 按 ESC 取消并返回主菜单{Style.RESET_ALL}\n")
+
+        cancelled = False
+        while True:
+            now = datetime.now()
+            if now >= target_dt:
+                break
+            remaining = target_dt - now
+            total_secs = int(remaining.total_seconds())
+            h = total_secs // 3600
+            m_ = (total_secs % 3600) // 60
+            s = total_secs % 60
+            countdown_str = f"⏳ 剩余时间: {h:02d}:{m_:02d}:{s:02d}"
+            print(f"\r{Fore.GREEN}{countdown_str}{Style.RESET_ALL}   ", end="", flush=True)
+
+            if self._check_esc_nonblocking():
+                cancelled = True
+                break
+            time.sleep(0.5)
+
+        print()
+
+        if cancelled:
+            print(f"\n{Fore.YELLOW}⚠️  已取消定时激活{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}按任意键返回主菜单...{Style.RESET_ALL}")
+            self._wait_for_key()
+            return
+
+        # 触发：拉起代理 + 执行 claude 临时对话
+        print(f"\n{Fore.GREEN}⏰ 时间到，开始激活...{Style.RESET_ALL}\n")
+        self.check_and_start_clash()
+
+        proxy_env = {**os.environ}
+        if proxy_on:
+            proxy_env["HTTP_PROXY"] = self.proxy_url
+            proxy_env["HTTPS_PROXY"] = self.proxy_url
+
+        print(f"{Fore.CYAN}执行命令: claude --print --no-session-persistence \"你好\"{Style.RESET_ALL}\n")
+
+        try:
+            result = subprocess.run(
+                ["claude", "--print", "--no-session-persistence", "你好"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=True,
+                env=proxy_env,
+                cwd=os.path.expanduser("~"),
+                timeout=180
+            )
+            if result.returncode == 0:
+                reply = (result.stdout or "").strip()
+                print(f"{Fore.GREEN}✅ 激活成功！Claude 回复:{Style.RESET_ALL}\n")
+                print(f"{Fore.WHITE}{reply if reply else '(空回复)'}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.RED}❌ 激活失败 (exit {result.returncode}){Style.RESET_ALL}")
+                if result.stderr:
+                    print(f"{Fore.RED}{result.stderr.strip()}{Style.RESET_ALL}")
+        except subprocess.TimeoutExpired:
+            print(f"{Fore.RED}❌ 命令超时（>180s），可能是代理或网络问题{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}❌ 执行出错: {e}{Style.RESET_ALL}")
+
+        print(f"\n{Fore.CYAN}按任意键返回主菜单...{Style.RESET_ALL}")
+        self._wait_for_key()
+
     def show_settings(self):
         """显示设置菜单"""
         while True:
@@ -1062,6 +1232,8 @@ class ClaudeLauncher:
                 break  # 切换后退出当前启动器
             elif choice == -9:  # W键启动服务端
                 self.start_websocket_server()
+            elif choice == -10:  # T键定时激活
+                self.timed_activation()
             else:  # 选择了某个路径
                 # 提取路径
                 selected_option = options[choice]
