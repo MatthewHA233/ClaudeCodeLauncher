@@ -591,14 +591,20 @@ class CodexLauncher:
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
         print(f"{Fore.YELLOW}🔧 正在安装/更新 OpenAI Codex CLI...{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}🌐 使用代理: {self.proxy_url}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}执行命令: npm install -g @openai/codex@latest{Style.RESET_ALL}\n")
+
+        proxy_env = {**os.environ, "HTTP_PROXY": self.proxy_url, "HTTPS_PROXY": self.proxy_url}
 
         try:
             result = subprocess.run(
                 ["npm", "install", "-g", "@openai/codex@latest"],
                 capture_output=True,
                 text=True,
-                shell=True
+                encoding="utf-8",
+                errors="replace",
+                shell=True,
+                env=proxy_env
             )
 
             if result.returncode == 0:
@@ -610,6 +616,8 @@ class CodexLauncher:
                     ["codex", "--version"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     shell=True
                 )
                 if version_result.returncode == 0:
