@@ -23,6 +23,11 @@ class ConversationViewer:
         if not self.claude_projects_dir.exists():
             return None
 
+        # 优先精确匹配：目录名规则就是把路径中所有非字母数字字符替换为横杠
+        exact_name = re.sub(r'[^A-Za-z0-9]', '-', project_path)
+        if (self.claude_projects_dir / exact_name).is_dir():
+            return exact_name
+
         # 规范化路径
         norm_path = project_path.replace("\\", "/")
 
