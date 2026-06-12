@@ -193,6 +193,12 @@ class ClaudeLauncher:
                     session_name = parts[0].replace("SESSION:", "")
                     meta = parts[1] if len(parts) > 1 else ""
 
+                    # 选中态隐藏图标（与普通选项一致，图标仅在未选中时显示）
+                    for icon_prefix in ("⚡ ", "📌 "):
+                        if session_name.startswith(icon_prefix):
+                            session_name = session_name[len(icon_prefix):]
+                            break
+
                     print(f"  {Fore.CYAN}{Style.BRIGHT}{arrow} {Back.BLUE} {session_name} {Style.RESET_ALL}")
                     if meta:
                         print(f"     {Fore.YELLOW}{Style.DIM}{meta}{Style.RESET_ALL}")
