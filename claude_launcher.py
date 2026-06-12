@@ -1166,6 +1166,8 @@ class ClaudeLauncher:
             info = self.conversation_viewer.find_session_by_id(path, pin.get("id", ""))
             if info:
                 result.append((pin, info))
+        # 按会话最近活跃时间排序（最新在前），与会话列表顺序一致
+        result.sort(key=lambda x: x[1]['last_time'], reverse=True)
         return result
 
     def handle_path_selection(self, path):
