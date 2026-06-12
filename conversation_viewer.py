@@ -2,7 +2,7 @@ import os
 import json
 import re
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from conversation_web_v2 import show_conversation_web
 
 class ConversationViewer:
@@ -347,16 +347,14 @@ class ConversationViewer:
         return dt.strftime("%Y-%m-%d")
 
     def parse_timestamp(self, timestamp_str):
-        """解析时间戳并转换为中国时区（UTC+8）"""
+        """解析时间戳并转换为系统本地时区"""
         if not timestamp_str:
             return datetime.min
         try:
             # ISO 8601 格式: 2025-09-30T02:42:47.598Z (UTC时间)
             dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            # 转换为UTC+8（中国时区）
-            china_dt = dt + timedelta(hours=8)
             # 转换为naive datetime（移除时区信息）以便比较
-            return china_dt.replace(tzinfo=None)
+            return dt.astimezone().replace(tzinfo=None)
         except:
             return datetime.min
 

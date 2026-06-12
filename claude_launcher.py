@@ -1334,6 +1334,13 @@ class ClaudeLauncher:
         all_pins = self.config.setdefault("pinned_sessions", {})
         pins = all_pins.setdefault(path, [])
 
+        # 清理会话文件已被删除的失效常驻，避免占用名额且无法取消
+        valid_pins = [p for p in pins
+                      if self.conversation_viewer.find_session_by_id(path, p.get("id", ""))]
+        if len(valid_pins) != len(pins):
+            pins[:] = valid_pins
+            self.save_config()
+
         existing = next((p for p in pins if p["id"] == session['id']), None)
         if existing:
             pins.remove(existing)
