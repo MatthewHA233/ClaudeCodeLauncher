@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from conversation_web_v2 import show_conversation_web
@@ -168,6 +169,175 @@ class ConversationViewer:
         # 按最后修改时间排序
         sessions.sort(key=lambda x: x['last_time'], reverse=True)
         return sessions
+
+    def _read_file_tail(self, file_path, size=65536):
+        """读取文件末尾指定字节数，返回完整行列表（跳过可能被截断的首行）"""
+        try:
+            file_size = os.path.getsize(file_path)
+            with open(file_path, 'rb') as f:
+                f.seek(max(0, file_size - size))
+                data = f.read().decode('utf-8', errors='replace')
+            lines = data.splitlines()
+            # 如果不是从文件头读起，第一行可能不完整，丢弃
+            if file_size > size and lines:
+                lines = lines[1:]
+            return lines
+        except Exception:
+            return []
+
+    def _read_file_head(self, file_path, size=32768):
+        """读取文件开头指定字节数，返回完整行列表"""
+        try:
+            with open(file_path, 'rb') as f:
+                data = f.read(size).decode('utf-8', errors='replace')
+            lines = data.splitlines()
+            return lines
+        except Exception:
+            return []
+
+    def _extract_first_user_prompt(self, file_path):
+        """从文件头提取第一条真实用户消息作为标题回退"""
+        for line in self._read_file_head(file_path):
+            if '"type":"user"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get('type') != 'user' or obj.get('isSidechain'):
+                continue
+            content = obj.get('message', {}).get('content')
+            text = None
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                texts = [c.get('text', '') for c in content
+                         if isinstance(c, dict) and c.get('type') == 'text']
+                text = '\n'.join(t for t in texts if t)
+            if not text:
+                continue
+            text = text.strip()
+            # 跳过本地命令/系统注入等非真实输入
+            if text.startswith('<') or text.startswith('Caveat:'):
+                continue
+            return text.splitlines()[0].strip()
+        return None
+
+    def get_session_info(self, file_path):
+        """高效提取单个会话的展示信息（标题/分支/时间/大小），只读文件头尾"""
+        try:
+            file_size = os.path.getsize(file_path)
+        except Exception:
+            return None
+
+        session_id = Path(file_path).stem
+        title = None
+        git_branch = None
+        last_timestamp = None
+
+        for line in reversed(self._read_file_tail(file_path)):
+            if title is None and '"type":"ai-title"' in line:
+                try:
+                    title = json.loads(line).get('aiTitle')
+                except Exception:
+                    pass
+            if git_branch is None and '"gitBranch":"' in line:
+                m = re.search(r'"gitBranch":"([^"]*)"', line)
+                if m and m.group(1):
+                    git_branch = m.group(1)
+            if last_timestamp is None and '"timestamp":"' in line:
+                m = re.search(r'"timestamp":"([^"]*)"', line)
+                if m:
+                    last_timestamp = self.parse_timestamp(m.group(1))
+            if title and git_branch and last_timestamp:
+                break
+
+        if not title:
+            title = self._extract_first_user_prompt(file_path)
+        if not title:
+            title = session_id[:8]
+
+        if last_timestamp is None or last_timestamp == datetime.min:
+            try:
+                last_timestamp = datetime.fromtimestamp(os.path.getmtime(file_path))
+            except Exception:
+                last_timestamp = datetime.min
+
+        return {
+            'id': session_id,
+            'file_path': str(file_path),
+            'title': title,
+            'git_branch': git_branch or '',
+            'last_time': last_timestamp,
+            'file_size': file_size
+        }
+
+    def get_sessions_info(self, project_path, limit=15):
+        """获取项目会话的展示信息列表（按最近修改排序，最多 limit 条）"""
+        project_hash = self.get_project_hash(project_path)
+        if not project_hash:
+            return []
+
+        session_dir = self.claude_projects_dir / project_hash
+        if not session_dir.exists():
+            return []
+
+        jsonl_files = []
+        for file_name in os.listdir(session_dir):
+            if file_name.endswith('.jsonl'):
+                fp = session_dir / file_name
+                try:
+                    jsonl_files.append((os.path.getmtime(fp), fp))
+                except Exception:
+                    continue
+
+        jsonl_files.sort(key=lambda x: x[0], reverse=True)
+
+        sessions = []
+        for _, fp in jsonl_files[:limit]:
+            info = self.get_session_info(fp)
+            if info:
+                sessions.append(info)
+        return sessions
+
+    def get_latest_session_info(self, project_path):
+        """获取项目最近一次会话的展示信息，没有则返回 None"""
+        sessions = self.get_sessions_info(project_path, limit=1)
+        return sessions[0] if sessions else None
+
+    def find_session_by_id(self, project_path, session_id):
+        """按会话 ID 查找会话文件并返回展示信息，找不到返回 None"""
+        project_hash = self.get_project_hash(project_path)
+        if not project_hash:
+            return None
+        fp = self.claude_projects_dir / project_hash / f"{session_id}.jsonl"
+        if not fp.exists():
+            return None
+        return self.get_session_info(fp)
+
+    def format_relative_time(self, dt):
+        """格式化为相对时间（如 6秒前、13小时前、3周前）"""
+        if dt == datetime.min:
+            return "未知时间"
+        delta = datetime.now() - dt
+        seconds = int(delta.total_seconds())
+        if seconds < 0:
+            seconds = 0
+        if seconds < 60:
+            return f"{seconds}秒前"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}分钟前"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}小时前"
+        days = hours // 24
+        if days < 7:
+            return f"{days}天前"
+        weeks = days // 7
+        if weeks < 5:
+            return f"{weeks}周前"
+        return dt.strftime("%Y-%m-%d")
 
     def parse_timestamp(self, timestamp_str):
         """解析时间戳并转换为中国时区（UTC+8）"""

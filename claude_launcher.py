@@ -74,7 +74,8 @@ class ClaudeLauncher:
             "all_paths": [],
             "use_proxy": True,  # 默认开启代理
             "clash_path": default_proxy_path,
-            "resume_mode": "cli"  # 历史会话选择模式: "cli" 或 "web"
+            "resume_mode": "cli",  # 历史会话选择模式: "cli"、"web" 或 "diy"
+            "pinned_sessions": {}  # DIY模式常驻会话: {项目路径: [{"id":..,"name":..}]}
         }
     
     def save_config(self):
@@ -184,9 +185,17 @@ class ClaudeLauncher:
                     parts = option.split("|")
                     parent_name = parts[0].replace("PARENT:", "")
                     path = parts[1].replace("PATH:", "")
-                    
+
                     print(f"  {Fore.CYAN}{Style.BRIGHT}{arrow} {Back.BLUE}📁 {parent_name}{Style.RESET_ALL}")
                     print(f"     {Fore.YELLOW}{Style.DIM}{path}{Style.RESET_ALL}")
+                elif "SESSION:" in option and "META:" in option:
+                    parts = option.split("|META:")
+                    session_name = parts[0].replace("SESSION:", "")
+                    meta = parts[1] if len(parts) > 1 else ""
+
+                    print(f"  {Fore.CYAN}{Style.BRIGHT}{arrow} {Back.BLUE} {session_name} {Style.RESET_ALL}")
+                    if meta:
+                        print(f"     {Fore.YELLOW}{Style.DIM}{meta}{Style.RESET_ALL}")
                 else:
                     print(f"  {Fore.CYAN}{Style.BRIGHT}{arrow} {Back.BLUE} {option} {Style.RESET_ALL}")
                 self.frame_index += 1
@@ -250,10 +259,20 @@ class ClaudeLauncher:
                     parts = option.split("|")
                     parent_name = parts[0].replace("PARENT:", "")
                     path = parts[1].replace("PATH:", "")
-                    
+
                     # 父级目录显示
                     print(f"  📁 {Fore.MAGENTA}{Style.BRIGHT}{parent_name}{Style.RESET_ALL}")
                     print(f"     {Fore.WHITE}{Style.DIM}{path}{Style.RESET_ALL}")
+                elif "SESSION:" in option and "META:" in option:
+                    # 解析会话名称和元信息
+                    parts = option.split("|META:")
+                    session_name = parts[0].replace("SESSION:", "")
+                    meta = parts[1] if len(parts) > 1 else ""
+
+                    name_color = Fore.MAGENTA if "📌" in session_name else Fore.CYAN
+                    print(f"  {name_color}{Style.BRIGHT}{session_name}{Style.RESET_ALL}")
+                    if meta:
+                        print(f"     {Fore.WHITE}{Style.DIM}{meta}{Style.RESET_ALL}")
                 else:
                     print(f"  {icon} {color}{option}{Style.RESET_ALL}")
         
@@ -309,6 +328,8 @@ class ClaudeLauncher:
                 return 'SERVER'
             elif key == b't' or key == b'T':
                 return 'TIMED'
+            elif key == b'p' or key == b'P':
+                return 'PIN'
         else:  # Unix/Linux/macOS
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
@@ -348,6 +369,8 @@ class ClaudeLauncher:
                     return 'SERVER'
                 elif ch.lower() == 't':
                     return 'TIMED'
+                elif ch.lower() == 'p':
+                    return 'PIN'
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -890,6 +913,28 @@ class ClaudeLauncher:
         print(f"\n{Fore.CYAN}按任意键返回主菜单...{Style.RESET_ALL}")
         self._wait_for_key()
 
+    def _resume_mode_text(self, mode):
+        """历史会话选择模式的显示名称"""
+        return {"web": "Web图形化", "diy": "DIY模式"}.get(mode, "命令行(CLI)")
+
+    def _resume_mode_color(self, mode):
+        """历史会话选择模式的显示颜色"""
+        return {"web": Fore.CYAN, "diy": Fore.MAGENTA}.get(mode, Fore.YELLOW)
+
+    def _truncate_display(self, text, max_width):
+        """按显示宽度截断文本，超出部分用 … 表示"""
+        if self.get_display_width(text) <= max_width:
+            return text
+        result = ""
+        width = 0
+        for char in text:
+            char_width = 2 if ord(char) > 127 else 1
+            if width + char_width > max_width - 1:
+                break
+            result += char
+            width += char_width
+        return result + "…"
+
     def show_settings(self):
         """显示设置菜单"""
         while True:
@@ -905,8 +950,8 @@ class ClaudeLauncher:
             proxy_name = os.path.basename(clash_path).replace(".exe", "")
 
             resume_mode = self.config.get("resume_mode", "cli")
-            resume_mode_text = "Web图形化" if resume_mode == "web" else "命令行(CLI)"
-            resume_mode_color = Fore.CYAN if resume_mode == "web" else Fore.YELLOW
+            resume_mode_text = self._resume_mode_text(resume_mode)
+            resume_mode_color = self._resume_mode_color(resume_mode)
 
             options = [
                 f"代理功能: {proxy_color}{proxy_status}{Style.RESET_ALL}",
@@ -928,12 +973,13 @@ class ClaudeLauncher:
                 time.sleep(1)
             elif choice == 1:  # 设置代理软件路径
                 self.set_proxy_path()
-            elif choice == 2:  # 切换历史会话选择模式
-                self.config["resume_mode"] = "web" if self.config.get("resume_mode", "cli") == "cli" else "cli"
+            elif choice == 2:  # 切换历史会话选择模式（cli → web → diy 循环）
+                mode_cycle = {"cli": "web", "web": "diy", "diy": "cli"}
+                current_mode = self.config.get("resume_mode", "cli")
+                self.config["resume_mode"] = mode_cycle.get(current_mode, "cli")
                 self.save_config()
-                new_mode_text = "Web图形化" if self.config["resume_mode"] == "web" else "命令行(CLI)"
-                new_mode_color = Fore.CYAN if self.config["resume_mode"] == "web" else Fore.YELLOW
-                print(f"\n{Fore.CYAN}历史会话选择模式已切换为: {new_mode_color}{new_mode_text}{Style.RESET_ALL}")
+                new_mode = self.config["resume_mode"]
+                print(f"\n{Fore.CYAN}历史会话选择模式已切换为: {self._resume_mode_color(new_mode)}{self._resume_mode_text(new_mode)}{Style.RESET_ALL}")
                 time.sleep(1)
     
     def set_proxy_path(self):
@@ -1107,19 +1153,51 @@ class ClaudeLauncher:
         cmd_string = " && ".join(commands)
         subprocess.run(cmd_string, shell=True)
     
+    def _get_valid_pinned_sessions(self, path):
+        """获取项目的有效常驻会话列表 [(pin配置, 会话信息), ...]，会话文件已删除的自动跳过"""
+        result = []
+        for pin in self.config.get("pinned_sessions", {}).get(path, []):
+            info = self.conversation_viewer.find_session_by_id(path, pin.get("id", ""))
+            if info:
+                result.append((pin, info))
+        return result
+
     def handle_path_selection(self, path):
         """处理路径选择后的操作"""
         while True:
             resume_mode = self.config.get("resume_mode", "cli")
-            resume_mode_text = "Web图形化" if resume_mode == "web" else "claude --resume"
-            options = [
-                "进入最近会话 (claude -c)",
+            resume_mode_text = {"web": "Web图形化", "diy": "DIY模式"}.get(resume_mode, "claude --resume")
+
+            # 最近会话信息（直接显示是什么会话）
+            latest = self.conversation_viewer.get_latest_session_info(path)
+            if latest:
+                latest_title = self._truncate_display(latest['title'], 42)
+                latest_rel = self.conversation_viewer.format_relative_time(latest['last_time'])
+                recent_option = f"SESSION:⚡ 进入最近会话 (claude -c)|META:{latest_title} · {latest_rel}"
+            else:
+                recent_option = "进入最近会话 (claude -c)"
+
+            # 常驻快捷入口（最多3条，DIY模式中设置）
+            pinned = self._get_valid_pinned_sessions(path)
+
+            options = [recent_option]
+            for pin, info in pinned:
+                meta_parts = [
+                    self._truncate_display(info['title'], 32),
+                    self.conversation_viewer.format_relative_time(info['last_time'])
+                ]
+                if info['git_branch']:
+                    meta_parts.append(info['git_branch'])
+                options.append(f"SESSION:📌 {pin['name']}|META:{' · '.join(meta_parts)}")
+
+            pinned_count = len(pinned)
+            options.extend([
                 "开始新会话 (claude)",
                 f"选择历史会话 ({resume_mode_text})",
                 "整理git提交作为学习材料",
                 "删除此项目记录",
                 "返回主菜单"
-            ]
+            ])
 
             # 获取路径的最后一部分作为项目名
             project_name = os.path.basename(path) or path
@@ -1127,24 +1205,127 @@ class ClaudeLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 5:  # ESC或返回主菜单
+            back_index = pinned_count + 5
+            if choice == -1 or choice == back_index:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_claude_command(path, "claude -c")
-            elif choice == 1:
+            elif 1 <= choice <= pinned_count:  # 常驻快捷入口
+                pin, info = pinned[choice - 1]
+                self.execute_claude_command(path, f"claude --resume {info['id']}")
+            elif choice == pinned_count + 1:
                 self.execute_claude_command(path, "claude")
-            elif choice == 2:
+            elif choice == pinned_count + 2:
                 # 根据配置选择历史会话模式
-                if self.config.get("resume_mode", "cli") == "web":
+                if resume_mode == "web":
                     self.conversation_viewer.show_sessions_with_resume(path)
+                elif resume_mode == "diy":
+                    self.show_sessions_diy(path)
                 else:
                     self.execute_claude_command(path, "claude --resume")
-            elif choice == 3:
+            elif choice == pinned_count + 3:
                 self.git_organizer.run_commit_organizer(path)
-            elif choice == 4:
+            elif choice == pinned_count + 4:
                 # 删除项目记录
                 if self.delete_project_record(path):
                     break  # 删除成功后返回主菜单
+
+    def show_sessions_diy(self, path):
+        """DIY模式：类 claude --resume 展示会话，支持常驻最多3条快捷入口"""
+        selected = 0
+        while True:
+            sessions = self.conversation_viewer.get_sessions_info(path, limit=10)
+            if not sessions:
+                self.clear_screen()
+                print(f"\n{Fore.YELLOW}⚠️  该项目暂无会话记录{Style.RESET_ALL}")
+                print(f"\n{Fore.CYAN}按任意键返回...{Style.RESET_ALL}")
+                self._wait_for_key()
+                return
+
+            pins = self.config.get("pinned_sessions", {}).get(path, [])
+            pinned_names = {p["id"]: p["name"] for p in pins}
+
+            if selected >= len(sessions):
+                selected = len(sessions) - 1
+
+            project_name = os.path.basename(path) or path
+            self.clear_screen()
+            self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+            centered = "║" + self.center_text(f"🎨 DIY 历史会话 - {project_name}", 60) + "║"
+            self.print_gradient_text(centered)
+            self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+
+            for i, session in enumerate(sessions):
+                is_pinned = session['id'] in pinned_names
+                title = self._truncate_display(session['title'], 50)
+                meta_parts = [self.conversation_viewer.format_relative_time(session['last_time'])]
+                if session['git_branch']:
+                    meta_parts.append(session['git_branch'])
+                meta_parts.append(self.conversation_viewer.format_file_size(session['file_size']))
+                meta = " · ".join(meta_parts)
+
+                pin_mark = f"{Fore.MAGENTA}📌 {pinned_names[session['id']]} — {Style.RESET_ALL}" if is_pinned else ""
+                if i == selected:
+                    print(f"  {Fore.CYAN}{Style.BRIGHT}❯ {pin_mark}{Fore.CYAN}{Style.BRIGHT}{title}{Style.RESET_ALL}")
+                    print(f"      {Fore.YELLOW}{meta}{Style.RESET_ALL}")
+                else:
+                    print(f"    {pin_mark}{Fore.WHITE}{title}{Style.RESET_ALL}")
+                    print(f"      {Fore.WHITE}{Style.DIM}{meta}{Style.RESET_ALL}")
+
+            print(f"\n{Fore.CYAN}╭────────────────────────────────────────────────────────────╮{Style.RESET_ALL}")
+            tip = f"↑↓选择 Enter继续会话 P常驻/取消({len(pins)}/3) ESC返回"
+            print(f"{Fore.CYAN}│{Fore.WHITE}{self.center_text(tip, 60)}{Fore.CYAN}│{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
+
+            key = self.get_key()
+            if key == 'UP':
+                selected = (selected - 1) % len(sessions)
+            elif key == 'DOWN':
+                selected = (selected + 1) % len(sessions)
+            elif key == 'ENTER':
+                session = sessions[selected]
+                self.execute_claude_command(path, f"claude --resume {session['id']}")
+                return
+            elif key == 'ESC':
+                return
+            elif key == 'PIN':
+                self._toggle_pin_session(path, sessions[selected])
+
+    def _toggle_pin_session(self, path, session):
+        """常驻/取消常驻某个会话（最多3条，可自定义名字）"""
+        all_pins = self.config.setdefault("pinned_sessions", {})
+        pins = all_pins.setdefault(path, [])
+
+        existing = next((p for p in pins if p["id"] == session['id']), None)
+        if existing:
+            pins.remove(existing)
+            self.save_config()
+            return
+
+        if len(pins) >= 3:
+            print(f"\n{Fore.YELLOW}⚠️  最多常驻3条会话，请先取消一条（选中后按 P）{Style.RESET_ALL}")
+            time.sleep(1.5)
+            return
+
+        # 输入自定义名字
+        self.clear_screen()
+        self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+        centered = "║" + self.center_text("📌 设置常驻会话名称", 57) + "║"
+        self.print_gradient_text(centered)
+        self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+        print(f"{Fore.CYAN}会话: {Fore.WHITE}{self._truncate_display(session['title'], 50)}{Style.RESET_ALL}\n")
+        print(f"{Fore.CYAN}📝 请输入快捷入口名称 {Fore.WHITE}(直接按 Enter 使用会话标题，ESC 取消){Style.RESET_ALL}")
+        print(f"{Fore.GREEN}➤ {Style.RESET_ALL}", end="", flush=True)
+
+        name = self.get_input_with_esc()
+        if name is None:  # ESC取消
+            return
+        name = name.strip() or self._truncate_display(session['title'], 24)
+
+        pins.append({"id": session['id'], "name": name})
+        self.save_config()
+        print(f"\n{Fore.GREEN}✅ 已常驻: 📌 {name}{Style.RESET_ALL}")
+        time.sleep(1)
 
     def delete_project_record(self, path):
         """删除项目记录"""
