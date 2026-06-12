@@ -272,8 +272,8 @@ class ConversationViewer:
             'file_size': file_size
         }
 
-    def get_sessions_info(self, project_path, limit=15):
-        """获取项目会话的展示信息列表（按最近修改排序，最多 limit 条）"""
+    def get_sessions_info(self, project_path, limit=None):
+        """获取项目会话的展示信息列表（按最近修改排序，limit=None 返回全部）"""
         project_hash = self.get_project_hash(project_path)
         if not project_hash:
             return []
@@ -292,9 +292,11 @@ class ConversationViewer:
                     continue
 
         jsonl_files.sort(key=lambda x: x[0], reverse=True)
+        if limit is not None:
+            jsonl_files = jsonl_files[:limit]
 
         sessions = []
-        for _, fp in jsonl_files[:limit]:
+        for _, fp in jsonl_files:
             info = self.get_session_info(fp)
             if info:
                 sessions.append(info)

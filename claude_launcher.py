@@ -1239,31 +1239,41 @@ class ClaudeLauncher:
                     break  # 删除成功后返回主菜单
 
     def show_sessions_diy(self, path):
-        """DIY模式：类 claude --resume 展示会话，支持常驻最多3条快捷入口"""
-        selected = 0
-        while True:
-            sessions = self.conversation_viewer.get_sessions_info(path, limit=10)
-            if not sessions:
-                self.clear_screen()
-                print(f"\n{Fore.YELLOW}⚠️  该项目暂无会话记录{Style.RESET_ALL}")
-                print(f"\n{Fore.CYAN}按任意键返回...{Style.RESET_ALL}")
-                self._wait_for_key()
-                return
+        """DIY模式：类 claude --resume 展示全部会话（分页），支持常驻最多3条快捷入口"""
+        sessions = self.conversation_viewer.get_sessions_info(path)
+        if not sessions:
+            self.clear_screen()
+            print(f"\n{Fore.YELLOW}⚠️  该项目暂无会话记录{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}按任意键返回...{Style.RESET_ALL}")
+            self._wait_for_key()
+            return
 
+        per_page = 8
+        total_pages = (len(sessions) - 1) // per_page + 1
+        page = 0
+        selected = 0
+        project_name = os.path.basename(path) or path
+
+        while True:
             pins = self.config.get("pinned_sessions", {}).get(path, [])
             pinned_names = {p["id"]: p["name"] for p in pins}
 
-            if selected >= len(sessions):
-                selected = len(sessions) - 1
+            start_idx = page * per_page
+            page_sessions = sessions[start_idx:start_idx + per_page]
+            if selected >= len(page_sessions):
+                selected = len(page_sessions) - 1
 
-            project_name = os.path.basename(path) or path
             self.clear_screen()
             self.print_gradient_text("\n╔" + "═" * 60 + "╗")
-            centered = "║" + self.center_text(f"🎨 DIY 历史会话 - {project_name}", 60) + "║"
+            if total_pages > 1:
+                header = f"🎨 DIY 历史会话 - {project_name} ({page + 1}/{total_pages}页·共{len(sessions)}条)"
+            else:
+                header = f"🎨 DIY 历史会话 - {project_name}"
+            centered = "║" + self.center_text(header, 60) + "║"
             self.print_gradient_text(centered)
             self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
-            for i, session in enumerate(sessions):
+            for i, session in enumerate(page_sessions):
                 is_pinned = session['id'] in pinned_names
                 title = self._truncate_display(session['title'], 50)
                 meta_parts = [self.conversation_viewer.format_relative_time(session['last_time'])]
@@ -1281,23 +1291,43 @@ class ClaudeLauncher:
                     print(f"      {Fore.WHITE}{Style.DIM}{meta}{Style.RESET_ALL}")
 
             print(f"\n{Fore.CYAN}╭────────────────────────────────────────────────────────────╮{Style.RESET_ALL}")
-            tip = f"↑↓选择 Enter继续会话 P常驻/取消({len(pins)}/3) ESC返回"
+            tip = f"↑↓选 Enter继续 P常驻({len(pins)}/3) ←→翻页 ESC返回"
             print(f"{Fore.CYAN}│{Fore.WHITE}{self.center_text(tip, 60)}{Fore.CYAN}│{Style.RESET_ALL}")
             print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
 
             key = self.get_key()
             if key == 'UP':
-                selected = (selected - 1) % len(sessions)
+                if selected > 0:
+                    selected -= 1
+                elif page > 0:  # 第一条继续向上，翻到上一页末尾
+                    page -= 1
+                    selected = per_page - 1
+                else:
+                    selected = len(page_sessions) - 1
             elif key == 'DOWN':
-                selected = (selected + 1) % len(sessions)
+                if selected < len(page_sessions) - 1:
+                    selected += 1
+                elif page < total_pages - 1:  # 最后一条继续向下，翻到下一页开头
+                    page += 1
+                    selected = 0
+                else:
+                    selected = 0
+            elif key == 'LEFT':
+                if page > 0:
+                    page -= 1
+                    selected = 0
+            elif key == 'RIGHT':
+                if page < total_pages - 1:
+                    page += 1
+                    selected = 0
             elif key == 'ENTER':
-                session = sessions[selected]
+                session = page_sessions[selected]
                 self.execute_claude_command(path, f"claude --resume {session['id']}")
                 return
             elif key == 'ESC':
                 return
             elif key == 'PIN':
-                self._toggle_pin_session(path, sessions[selected])
+                self._toggle_pin_session(path, page_sessions[selected])
 
     def _toggle_pin_session(self, path, session):
         """常驻/取消常驻某个会话（最多3条，可自定义名字）"""
