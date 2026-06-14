@@ -1619,6 +1619,13 @@ class ClaudeLauncher:
             # 检查并启动代理软件
             self.check_and_start_clash()
 
+            # 幂等拉起会话 API 服务（供 claude-switch 会话窗口消费；多窗口不冲突）
+            try:
+                from session_api_autostart import ensure_running
+                ensure_running()
+            except Exception:
+                pass
+
             # 显示主菜单
             self.main_menu()
 

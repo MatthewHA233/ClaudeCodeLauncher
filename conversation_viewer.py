@@ -322,6 +322,188 @@ class ConversationViewer:
             return None
         return self.get_session_info(fp)
 
+    # ---------- 跨项目 / 数据 API 复用方法（方案A：实时解析，只读） ----------
+
+    def _iso_to_unix(self, timestamp_str):
+        """ISO 时间戳 → UTC 秒级时间戳（跨时区无歧义），失败返回 None"""
+        if not timestamp_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            return int(dt.timestamp())
+        except Exception:
+            return None
+
+    def _iso_to_local_date(self, timestamp_str):
+        """ISO 时间戳 → 服务所在机器本地日期 YYYY-MM-DD"""
+        if not timestamp_str:
+            return '未知'
+        try:
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).astimezone()
+            return dt.strftime('%Y-%m-%d')
+        except Exception:
+            return '未知'
+
+    def _read_cwd(self, file_path):
+        """从文件头提取真实项目路径（JSONL 的 cwd 字段，目录名有损无法还原）"""
+        for line in self._read_file_head(file_path):
+            if '"cwd"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get('cwd'):
+                return obj['cwd']
+        return None
+
+    def _extract_user_text(self, obj):
+        """从 user 行提取主人真实输入文本；工具结果/命令/系统注入返回 None"""
+        if obj.get('type') != 'user' or obj.get('isSidechain'):
+            return None
+        content = obj.get('message', {}).get('content')
+        if isinstance(content, list):
+            if any(isinstance(x, dict) and x.get('type') == 'tool_result' for x in content):
+                return None
+            text = '\n'.join(x.get('text', '') for x in content
+                             if isinstance(x, dict) and x.get('type') == 'text')
+        elif isinstance(content, str):
+            text = content
+        else:
+            return None
+        t = (text or '').strip()
+        if not t:
+            return None
+        if t.startswith('<') or t.startswith('Caveat:') or 'local-command' in t[:60] \
+                or t.startswith('[Request interrupted'):
+            return None
+        return t
+
+    def _extract_assistant_text(self, obj):
+        """从 assistant 行提取回复正文（仅 text 块，跳过 thinking/tool_use）"""
+        if obj.get('type') != 'assistant':
+            return None
+        content = obj.get('message', {}).get('content')
+        if isinstance(content, list):
+            text = '\n'.join(x.get('text', '') for x in content
+                             if isinstance(x, dict) and x.get('type') == 'text')
+        elif isinstance(content, str):
+            text = content
+        else:
+            return None
+        t = (text or '').strip()
+        return t or None
+
+    def get_all_sessions_info(self):
+        """枚举所有项目的所有会话（含真实项目路径），按最近活跃排序"""
+        if not self.claude_projects_dir.exists():
+            return []
+
+        results = []
+        for dir_name in os.listdir(self.claude_projects_dir):
+            dir_path = self.claude_projects_dir / dir_name
+            if not dir_path.is_dir():
+                continue
+
+            files = [fn for fn in os.listdir(dir_path) if fn.endswith('.jsonl')]
+            if not files:
+                continue
+
+            # 同项目所有会话 cwd 相同，读一次即可
+            cwd = self._read_cwd(dir_path / files[0]) or ''
+            project_name = os.path.basename(cwd.rstrip('/\\')) or dir_name
+
+            for fn in files:
+                fp = dir_path / fn
+                info = self.get_session_info(fp)
+                if not info:
+                    continue
+                info['project_path'] = cwd
+                info['project_name'] = project_name
+                try:
+                    info['last_unix'] = int(os.path.getmtime(fp))
+                except Exception:
+                    info['last_unix'] = 0
+                results.append(info)
+
+        results.sort(key=lambda x: x.get('last_unix', 0), reverse=True)
+        return results
+
+    def find_session_file(self, session_id):
+        """跨所有项目按会话 ID 定位 JSONL 文件，找不到返回 None"""
+        if not self.claude_projects_dir.exists():
+            return None
+        for dir_name in os.listdir(self.claude_projects_dir):
+            fp = self.claude_projects_dir / dir_name / f"{session_id}.jsonl"
+            if fp.exists():
+                return fp
+        return None
+
+    def get_session_messages(self, file_path):
+        """提取单会话的消息时间轴：主人真实发言 + assistant 回复正文"""
+        messages = []
+        try:
+            with open(file_path, encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    ut = self._extract_user_text(obj)
+                    if ut is not None:
+                        messages.append({
+                            'role': 'user', 'text': ut,
+                            'ts': obj.get('timestamp', ''),
+                            'ts_unix': self._iso_to_unix(obj.get('timestamp', ''))
+                        })
+                        continue
+                    at = self._extract_assistant_text(obj)
+                    if at is not None:
+                        messages.append({
+                            'role': 'assistant', 'text': at,
+                            'ts': obj.get('timestamp', ''),
+                            'ts_unix': self._iso_to_unix(obj.get('timestamp', ''))
+                        })
+        except Exception:
+            return []
+        return messages
+
+    def get_daily_stats(self):
+        """按本地日期统计主人对 Claude Code 的发言：每天的条数与字数（跨所有项目）"""
+        from collections import defaultdict
+        stats = defaultdict(lambda: [0, 0])
+        if not self.claude_projects_dir.exists():
+            return []
+
+        for dir_name in os.listdir(self.claude_projects_dir):
+            dir_path = self.claude_projects_dir / dir_name
+            if not dir_path.is_dir():
+                continue
+            for fn in os.listdir(dir_path):
+                if not fn.endswith('.jsonl'):
+                    continue
+                try:
+                    with open(dir_path / fn, encoding='utf-8', errors='replace') as f:
+                        for line in f:
+                            if '"type":"user"' not in line:
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            t = self._extract_user_text(obj)
+                            if not t:
+                                continue
+                            d = self._iso_to_local_date(obj.get('timestamp', ''))
+                            stats[d][0] += 1
+                            stats[d][1] += len(t)
+                except Exception:
+                    continue
+
+        out = [{'date': d, 'count': c, 'chars': ch} for d, (c, ch) in stats.items()]
+        out.sort(key=lambda x: x['date'])
+        return out
+
     def format_relative_time(self, dt):
         """格式化为相对时间（如 6秒前、13小时前、3周前）"""
         if dt == datetime.min:
