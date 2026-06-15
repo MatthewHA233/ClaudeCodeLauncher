@@ -200,32 +200,53 @@ class ConversationViewer:
         except Exception:
             return []
 
+    def _json_typed_field(self, line, type_name, field_name):
+        """若该 JSON 行的 type == type_name，返回 field_name 字段（去空后非空），否则 None。
+
+        注意 Claude Code 的命名陷阱：type 是 kebab（custom-title / ai-title），
+        字段却是 camel（customTitle / aiTitle）；且 agent-name 的 agentName 值常与
+        customTitle 相同，但它不是标题——用精确 type 判断避免误拿。
+        """
+        if f'"{type_name}"' not in line:
+            return None
+        try:
+            obj = json.loads(line)
+        except Exception:
+            return None
+        if obj.get('type') != type_name:
+            return None
+        v = obj.get(field_name)
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    def _user_first_line(self, line):
+        """若该行是主人真实发言，返回其文本首行；工具结果/命令/系统注入返回 None"""
+        if '"type":"user"' not in line:
+            return None
+        try:
+            obj = json.loads(line)
+        except Exception:
+            return None
+        if obj.get('type') != 'user' or obj.get('isSidechain'):
+            return None
+        content = obj.get('message', {}).get('content')
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = '\n'.join(c.get('text', '') for c in content
+                             if isinstance(c, dict) and c.get('type') == 'text')
+        else:
+            return None
+        text = (text or '').strip()
+        if not text or text.startswith('<') or text.startswith('Caveat:'):
+            return None
+        return text.splitlines()[0].strip()
+
     def _extract_first_user_prompt(self, file_path):
         """从文件头提取第一条真实用户消息作为标题回退"""
         for line in self._read_file_head(file_path):
-            if '"type":"user"' not in line:
-                continue
-            try:
-                obj = json.loads(line)
-            except Exception:
-                continue
-            if obj.get('type') != 'user' or obj.get('isSidechain'):
-                continue
-            content = obj.get('message', {}).get('content')
-            text = None
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                texts = [c.get('text', '') for c in content
-                         if isinstance(c, dict) and c.get('type') == 'text']
-                text = '\n'.join(t for t in texts if t)
-            if not text:
-                continue
-            text = text.strip()
-            # 跳过本地命令/系统注入等非真实输入
-            if text.startswith('<') or text.startswith('Caveat:'):
-                continue
-            return text.splitlines()[0].strip()
+            v = self._user_first_line(line)
+            if v:
+                return v
         return None
 
     def get_session_info(self, file_path):
@@ -236,16 +257,19 @@ class ConversationViewer:
             return None
 
         session_id = Path(file_path).stem
-        title = None
+        custom_title = None     # 用户 /rename，取最新一条（尾部先遇到）
+        ai_title = None         # 自动生成，取最早一条（头部）
+        ai_title_latest = None  # ai-title 尾部兜底（头部没读到时用）
+        first_prompt = None
         git_branch = None
         last_timestamp = None
 
+        # 尾部反向：custom-title 最新 + ai-title 最新(兜底) + 分支 + 最新时间戳
         for line in reversed(self._read_file_tail(file_path)):
-            if title is None and '"type":"ai-title"' in line:
-                try:
-                    title = json.loads(line).get('aiTitle')
-                except Exception:
-                    pass
+            if custom_title is None:
+                custom_title = self._json_typed_field(line, 'custom-title', 'customTitle')
+            if ai_title_latest is None:
+                ai_title_latest = self._json_typed_field(line, 'ai-title', 'aiTitle')
             if git_branch is None and '"gitBranch":"' in line:
                 m = re.search(r'"gitBranch":"([^"]*)"', line)
                 if m and m.group(1):
@@ -254,13 +278,22 @@ class ConversationViewer:
                 m = re.search(r'"timestamp":"([^"]*)"', line)
                 if m:
                     last_timestamp = self.parse_timestamp(m.group(1))
-            if title and git_branch and last_timestamp:
+            if custom_title and ai_title_latest and git_branch and last_timestamp:
                 break
 
-        if not title:
-            title = self._extract_first_user_prompt(file_path)
-        if not title:
-            title = session_id[:8]
+        # 头部正向：ai-title 最早(优先) + 首条发言 + custom-title 头部兜底
+        for line in self._read_file_head(file_path):
+            if ai_title is None:
+                ai_title = self._json_typed_field(line, 'ai-title', 'aiTitle')
+            if custom_title is None:
+                custom_title = self._json_typed_field(line, 'custom-title', 'customTitle')
+            if first_prompt is None:
+                first_prompt = self._user_first_line(line)
+            if ai_title and first_prompt:
+                break
+
+        # 优先级：custom-title(最新) → ai-title(最早) → ai-title(尾部兜底) → 首条发言 → id
+        title = custom_title or ai_title or ai_title_latest or first_prompt or session_id[:8]
 
         if last_timestamp is None or last_timestamp == datetime.min:
             try:
