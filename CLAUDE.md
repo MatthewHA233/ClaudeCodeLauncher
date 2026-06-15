@@ -31,6 +31,11 @@ Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 `/raw/file` 的 `key` 经 `_resolve_key()` 严格校验（必须 `<dir>/<file>.jsonl`、禁 `..`、限定在 projects 内）。
 空闲 `IDLE_TIMEOUT_SECONDS`（默认 900s）无访问自动退出，不留常驻后台。
 
+**局域网发现（mDNS / Bonjour）**：`_start_mdns_advertise(port)` 启动时广播 `_claude-relay._tcp`，
+让对端 Claude Usage Monitor「添加来源」零配置发现本机（免手输 IP）。保持**纯标准库**：不引 zeroconf，
+改 subprocess 调系统工具——macOS 内置 `dns-sd -R`、Linux `avahi-publish-service`(若装了 avahi)；
+其它平台静默跳过(仍可手动填地址)。返回的 Popen 在 relay 退出时 `terminate()`。对端浏览端在 Claude Usage Monitor 的 `discovery.rs`(`mdns-sd` crate)。
+
 ## 自启：`session_api_autostart.py`
 
 `ensure_running()` 幂等拉起中继（已在跑则跳过、否则 detached 不弹窗启动），由
