@@ -36,6 +36,11 @@ def ensure_running(port=DEFAULT_PORT):
     返回值：True=本次拉起了新进程，False=已在跑/跳过/失败（均不影响主流程）。
     """
     try:
+        # 打包成 exe 后 sys.executable 是 exe（非 python），没法拿它拉起 .py 脚本，
+        # 强行 spawn 反而会误开一个 launcher 窗口；中继是给跨机读数据用的，打包版直接跳过。
+        if getattr(sys, "frozen", False):
+            return False
+
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_api_server.py")
         if not os.path.exists(script):
             return False
