@@ -12,6 +12,8 @@
   GET  /api/info           本机身份（hostname/os）
   GET  /raw/list           列出所有 .jsonl：{key, session_id, mtime, size}
   GET  /raw/file?key=...   返回该文件的原始字节（纯文本）
+  GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
+  POST /queue/push         claude-switch 推入一条待发草稿 {session_id, text, id?}
   POST /api/shutdown       本机优雅关闭
 
 空闲超时自动退出，不留常驻后台。
@@ -124,6 +126,30 @@ class RelayHandler(BaseHTTPRequestHandler):
             else:
                 self._json({'ok': False, 'error': 'forbidden'}, 403)
             return
+        if path in ('/queue/push', '/queue'):
+            # claude-switch 把「预备发言」推到本机：写入 ~/.claude/launcher_queue.json，
+            # 由本机启动器进入对话时消费。{session_id, text, id?}
+            try:
+                length = int(self.headers.get('Content-Length', 0) or 0)
+                raw = self.rfile.read(length) if length else b''
+                payload = json.loads(raw.decode('utf-8') or '{}')
+            except Exception as e:
+                self._json({'ok': False, 'error': f'bad json: {e}'}, 400)
+                return
+            session_id = (payload.get('session_id') or '').strip()
+            text = payload.get('text') or ''
+            draft_id = payload.get('id')
+            if not session_id or not text:
+                self._json({'ok': False, 'error': 'session_id and text required'}, 400)
+                return
+            try:
+                import launcher_queue
+                ok = launcher_queue.push(session_id, text, draft_id)
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)}, 500)
+                return
+            self._json({'ok': bool(ok)}, 200 if ok else 500)
+            return
         self._json({'ok': False, 'error': 'not found'}, 404)
 
     def do_GET(self):
@@ -156,6 +182,14 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 with open(fp, 'rb') as f:
                     self._raw(f.read())
+            elif path in ('/queue/list', '/queue'):
+                # 查看本机待发的预备发言队列（按 session_id 分组），供调试/校验
+                try:
+                    import launcher_queue
+                    q = launcher_queue._load().get('queue', {})
+                except Exception:
+                    q = {}
+                self._json({'ok': True, 'queue': q})
             else:
                 self._json({'ok': False, 'error': 'not found'}, 404)
         except Exception as e:

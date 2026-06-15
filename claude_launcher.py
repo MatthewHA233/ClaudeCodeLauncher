@@ -1155,9 +1155,80 @@ class ClaudeLauncher:
         print(f"{Fore.BLUE}🔧 执行命令: {Fore.WHITE}{command}{Style.RESET_ALL}")
         print(f"{proxy_info}\n")
 
-        # 执行命令
+        # 预备发言实时注入：会话运行期间，后台线程轮询队列，有 claude-switch 推来的
+        # 草稿就逐字符打入「当前正在跑的对话」输入框（不回车）。本进程与 claude 共用控制台，
+        # 故 subprocess.run 阻塞主线程时，这个后台线程仍能 WriteConsoleInput。
+        stop_evt = None
+        try:
+            stop_evt = self._start_draft_watcher(command, path)
+        except Exception:
+            stop_evt = None
+
+        # 执行命令（阻塞，直到 claude 退出）
         cmd_string = " && ".join(commands)
-        subprocess.run(cmd_string, shell=True)
+        try:
+            subprocess.run(cmd_string, shell=True)
+        finally:
+            if stop_evt is not None:
+                stop_evt.set()
+
+    def _resolve_session_id(self, command, path):
+        """从启动命令解析目标 session_id，匹配队列里的预备发言：
+           - `claude --resume <id>`：命令里直接有；
+           - `claude -c`：反查该项目最近会话 id；
+           - 新建会话 `claude` / 无 id 的 `claude --resume`（选择器）：拿不到 → None。"""
+        import re
+        m = re.search(r"--resume\s+([A-Za-z0-9\-]+)", command)
+        if m:
+            return m.group(1)
+        if re.search(r"\bclaude\s+-c\b", command):
+            try:
+                latest = self.conversation_viewer.get_latest_session_info(path)
+                if latest:
+                    return latest.get("id")
+            except Exception:
+                pass
+        return None
+
+    def _start_draft_watcher(self, command, path):
+        """会话运行期间轮询队列，把 claude-switch 推来的预备发言逐字符打入「当前对话」输入框。
+
+        关键：本启动器进程与 claude 共用同一个控制台，故后台线程能在 claude 运行时用
+        WriteConsoleInputW 写进它的输入缓冲（subprocess.run 阻塞的是主线程，不挡此线程）。
+        既覆盖「进入前已排队」也覆盖「常驻期间随时推送」。返回 threading.Event，
+        会话退出后由调用方 set() 停止轮询。"""
+        import threading
+        try:
+            import launcher_queue
+            import console_typer
+        except Exception:
+            return None
+        session_id = self._resolve_session_id(command, path)
+        if not session_id:
+            return None
+
+        stop_evt = threading.Event()
+
+        def _watch():
+            # 先等对话 TUI 起来，再开始轮询；之后每秒查一次队列
+            if stop_evt.wait(2.5):
+                return
+            while not stop_evt.is_set():
+                text = None
+                try:
+                    text = launcher_queue.pop(session_id)
+                except Exception:
+                    text = None
+                if text:
+                    try:
+                        console_typer.type_text(text, initial_delay=0)
+                    except Exception:
+                        pass
+                stop_evt.wait(1.0)
+
+        threading.Thread(target=_watch, daemon=True).start()
+        print(f"{Fore.MAGENTA}✍️  预备发言实时注入已就绪：在 claude-switch 点 ✈ 推送，会自动填入此对话输入框（不自动发送）{Style.RESET_ALL}")
+        return stop_evt
     
     def _get_valid_pinned_sessions(self, path):
         """获取项目的有效常驻会话列表 [(pin配置, 会话信息), ...]，会话文件已删除的自动跳过"""
