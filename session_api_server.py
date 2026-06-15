@@ -216,6 +216,32 @@ def _idle_watchdog(server, timeout):
             return
 
 
+def _start_mdns_advertise(port):
+    """用系统原生 Bonjour 广播本中继(_claude-relay._tcp)，便于对端零配置发现。
+
+    保持「纯标准库」：不引 zeroconf 依赖，改 subprocess 调系统工具——
+    macOS 用内置 `dns-sd -R`，Linux 用 `avahi-publish-service`(若装了 avahi)。
+    返回 Popen(供退出时终止)；不支持/失败时返回 None，绝不影响中继主流程。
+    """
+    import shutil
+    import subprocess
+    try:
+        host = socket.gethostname()
+        sysname = platform.system()
+        if sysname == "Darwin" and shutil.which("dns-sd"):
+            args = ["dns-sd", "-R", host, "_claude-relay._tcp", "local", str(port),
+                    f"os=macos", f"host={host}"]
+        elif sysname == "Linux" and shutil.which("avahi-publish-service"):
+            args = ["avahi-publish-service", host, "_claude-relay._tcp", str(port),
+                    "os=linux", f"host={host}"]
+        else:
+            return None  # 其它平台暂不广播(对端仍可手动填地址)
+        return subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except Exception:
+        return None
+
+
 def get_lan_ip():
     """获取本机局域网 IP（不实际发包，仅用于显示给另一台机器填写）"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -238,6 +264,7 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     _state["last"] = time.monotonic()
     if idle_timeout and idle_timeout > 0:
         threading.Thread(target=_idle_watchdog, args=(server, idle_timeout), daemon=True).start()
+    advertiser = _start_mdns_advertise(port)  # mDNS 广播(便于对端零配置发现)；不支持的平台返回 None
     lan = get_lan_ip()
     print("=" * 56)
     print(" Claude 会话薄中继已启动")
@@ -245,7 +272,9 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
     print(f"            （在另一台机器的 Claude Usage Monitor「会话」里填这个地址）")
-    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key=")
+    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key= /queue/push")
+    if advertiser is not None:
+        print(f"  局域网发现: 已用 Bonjour 广播 _claude-relay._tcp（对端可零配置发现本机）")
     if idle_timeout and idle_timeout > 0:
         print(f"  空闲退出 : {idle_timeout}s 无访问自动停止")
     print(f"  Ctrl+C 停止")
@@ -256,6 +285,11 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
         print("\n已停止")
         server.shutdown()
     finally:
+        if advertiser is not None:
+            try:
+                advertiser.terminate()
+            except Exception:
+                pass
         server.server_close()
 
 
