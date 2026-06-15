@@ -1155,7 +1155,7 @@ class ClaudeLauncher:
         print(f"{Fore.BLUE}🔧 执行命令: {Fore.WHITE}{command}{Style.RESET_ALL}")
         print(f"{proxy_info}\n")
 
-        # 预备发言实时注入：会话运行期间，后台线程轮询队列，有 claude-switch 推来的
+        # 预备发言实时注入：会话运行期间，后台线程轮询队列，有 Claude Usage Monitor 推来的
         # 草稿就逐字符打入「当前正在跑的对话」输入框（不回车）。本进程与 claude 共用控制台，
         # 故 subprocess.run 阻塞主线程时，这个后台线程仍能 WriteConsoleInput。
         stop_evt = None
@@ -1191,7 +1191,7 @@ class ClaudeLauncher:
         return None
 
     def _start_draft_watcher(self, command, path):
-        """会话运行期间轮询队列，把 claude-switch 推来的预备发言逐字符打入「当前对话」输入框。
+        """会话运行期间轮询队列，把 Claude Usage Monitor 推来的预备发言逐字符打入「当前对话」输入框。
 
         关键：本启动器进程与 claude 共用同一个控制台，故后台线程能在 claude 运行时用
         WriteConsoleInputW 写进它的输入缓冲（subprocess.run 阻塞的是主线程，不挡此线程）。
@@ -1227,7 +1227,7 @@ class ClaudeLauncher:
                 stop_evt.wait(1.0)
 
         threading.Thread(target=_watch, daemon=True).start()
-        print(f"{Fore.MAGENTA}✍️  预备发言实时注入已就绪：在 claude-switch 点 ✈ 推送，会自动填入此对话输入框（不自动发送）{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}✍️  预备发言实时注入已就绪：在 Claude Usage Monitor 点 ✈ 推送，会自动填入此对话输入框（不自动发送）{Style.RESET_ALL}")
         return stop_evt
     
     def _get_valid_pinned_sessions(self, path):
@@ -1690,7 +1690,7 @@ class ClaudeLauncher:
             # 检查并启动代理软件
             self.check_and_start_clash()
 
-            # 幂等拉起会话 API 服务（供 claude-switch 会话窗口消费；多窗口不冲突）
+            # 幂等拉起会话 API 服务（供 Claude Usage Monitor 会话窗口消费；多窗口不冲突）
             try:
                 from session_api_autostart import ensure_running
                 ensure_running()

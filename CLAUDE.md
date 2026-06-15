@@ -1,30 +1,30 @@
 # ClaudeCodeLauncher — AI 辅助开发规则
 
-> 本文件目前聚焦**与 claude-switch（Claude Usage Monitor）的联动契约**。
+> 本文件目前聚焦**与 Claude Usage Monitor 的联动契约**。
 > 改到下面这些文件/端点时务必小心：它们是另一个项目（`D:\my_pro\Tauri_ob\claude-switch`）
 > 的「会话」窗口依赖的对外接口，破坏会导致对方功能挂掉。
 
-## 角色：本启动器 = claude-switch 会话功能的「每台机器的桥」
+## 角色：本启动器 = Claude Usage Monitor 会话功能的「每台机器的桥」
 
-claude-switch 的「会话」窗口要聚合**本机 + 局域网各机器**的 Claude Code 会话数据，
+Claude Usage Monitor 的「会话」窗口要聚合**本机 + 局域网各机器**的 Claude Code 会话数据，
 但它只跑在某台 Windows 上。于是**每台机器各跑一个本启动器自带的薄中继**，对外暴露本机数据；
-claude-switch 用 Rust 统一解析 + rusqlite 物化。
+Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 
-- **本机数据**：claude-switch 直接读 `~/.claude/projects`，**不经本中继**。
-- **远程机器**：claude-switch 才通过本中继读那台机器的数据。
+- **本机数据**：Claude Usage Monitor 直接读 `~/.claude/projects`，**不经本中继**。
+- **远程机器**：Claude Usage Monitor 才通过本中继读那台机器的数据。
 - 所以「本机自己用」时这个中继可有可无；它主要是为「别的机器要读本机数据」+「接收别的机器推来的预备发言」而存在。
 
 ## 薄中继：`session_api_server.py`（绑 `0.0.0.0:47800`，纯标准库、只读 + 队列写）
 
-**不解析、不建库**，只搬运原始数据。端点（即对 claude-switch 的契约，勿随意改名/改结构）：
+**不解析、不建库**，只搬运原始数据。端点（即对 Claude Usage Monitor 的契约，勿随意改名/改结构）：
 
 | 方向 | 端点 | 说明 |
 |------|------|------|
-| 读 | `GET /api/ping` | 心跳（claude-switch 检测在线） |
+| 读 | `GET /api/ping` | 心跳（Claude Usage Monitor 检测在线） |
 | 读 | `GET /api/info` | 本机身份 `{hostname, os, platform}` |
 | 读 | `GET /raw/list` | 列全部 `.jsonl`：`{key, session_id, mtime, size}`（key=`<dir>/<file>.jsonl`） |
-| 读 | `GET /raw/file?key=...` | 返回该会话文件原始字节（claude-switch 自己解析） |
-| 写 | `POST /queue/push` | claude-switch 把「预备发言」推到本机：`{session_id, text, id?}` → 入队 |
+| 读 | `GET /raw/file?key=...` | 返回该会话文件原始字节（Claude Usage Monitor 自己解析） |
+| 写 | `POST /queue/push` | Claude Usage Monitor 把「预备发言」推到本机：`{session_id, text, id?}` → 入队 |
 | 写 | `GET /queue/list` | 查看本机待发队列（调试用） |
 | — | `POST /api/shutdown` | 仅本机优雅关闭 |
 
@@ -37,11 +37,11 @@ claude-switch 用 Rust 统一解析 + rusqlite 物化。
 `claude_launcher.py` / `codex_launcher.py` 进入主流程时调用。多个 ccrun 窗口同时启动时，
 靠中继端 `allow_reuse_address=False` 的 bind 失败兜底，保证全局单例。
 
-## 预备发言：claude-switch → 本启动器 → 实时打进正在跑的对话
+## 预备发言：Claude Usage Monitor → 本启动器 → 实时打进正在跑的对话
 
-claude-switch 的「预备发言/待办」挂靠到某个会话。用户在 claude-switch 点 ✈ 投递时：
-- **本机会话**：claude-switch 的 Rust 直接写 `~/.claude/launcher_queue.json`（不经中继）。
-- **远程会话**：claude-switch `POST /queue/push` 到那台机的中继 → `launcher_queue.push(...)` 写它本机同名文件。
+Claude Usage Monitor 的「预备发言/待办」挂靠到某个会话。用户在 Claude Usage Monitor 点 ✈ 投递时：
+- **本机会话**：Claude Usage Monitor 的 Rust 直接写 `~/.claude/launcher_queue.json`（不经中继）。
+- **远程会话**：Claude Usage Monitor `POST /queue/push` 到那台机的中继 → `launcher_queue.push(...)` 写它本机同名文件。
 
 **队列文件契约** `~/.claude/launcher_queue.json`：
 `{"version":1,"queue":{"<session_id>":[{"id":"<draft_id>","text":"..."}]}}`，同 `draft_id` 去重，临时文件 `os.replace` 原子替换。
@@ -63,11 +63,11 @@ claude **共用同一个控制台**，所以后台线程仍能 `WriteConsoleInpu
 
 ## 改这块时的注意
 
-- `/raw/list`、`/raw/file`、`/api/ping`、`/api/info` 是 claude-switch 的硬依赖：**字段名、`key` 格式不要改**。
-  对应的 Rust 解析在 claude-switch 的 `src-tauri/src/session_store.rs`（`sync_remote`）。
+- `/raw/list`、`/raw/file`、`/api/ping`、`/api/info` 是 Claude Usage Monitor 的硬依赖：**字段名、`key` 格式不要改**。
+  对应的 Rust 解析在 Claude Usage Monitor 的 `src-tauri/src/session_store.rs`（`sync_remote`）。
 - `~/.claude/projects` 下的 JSONL 是只读来源，中继**只读不写**。
-- 真正的会话解析/物化逻辑在 claude-switch（Rust），本仓库不要重新实现一套解析。
-- `~/.claude/launcher_queue.json` 是预备发言的本机落地点，结构改动需与 claude-switch 推送端（`session_store.rs` 的 `push_local_queue` / 中继 `/queue/push`）同步。
+- 真正的会话解析/物化逻辑在 Claude Usage Monitor（Rust），本仓库不要重新实现一套解析。
+- `~/.claude/launcher_queue.json` 是预备发言的本机落地点，结构改动需与 Claude Usage Monitor 推送端（`session_store.rs` 的 `push_local_queue` / 中继 `/queue/push`）同步。
 - `console_typer` **只填不发**：绝不注入回车（`\r`），由用户检查后自行发送。改动注入逻辑勿破坏这条。
 - 实时注入依赖「启动器与 claude 共用同一控制台」+「后台线程」。若哪天把 `subprocess.run` 改成新开窗口/新控制台
   （如 `CREATE_NEW_CONSOLE`、`wt.exe` 起新窗口），`WriteConsoleInputW` 会失效，需改用 `AttachConsole(目标pid)` 或 `SendInput`。

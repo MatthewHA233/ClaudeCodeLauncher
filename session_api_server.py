@@ -3,8 +3,8 @@
 """Claude 会话「薄中继」HTTP 服务（只读、跨平台、纯标准库）。
 
 每台机器各跑一个，绑 0.0.0.0:47800 对局域网开放。它**不解析、不建库**，
-只把本机 ~/.claude/projects 下的会话原始数据传出去，由 claude-switch (Rust)
-统一解析 + rusqlite 物化。本机数据 claude-switch 直接读文件系统、不经此中继；
+只把本机 ~/.claude/projects 下的会话原始数据传出去，由 Claude Usage Monitor (Rust)
+统一解析 + rusqlite 物化。本机数据 Claude Usage Monitor 直接读文件系统、不经此中继；
 此中继只为「别的机器要读本机数据」而存在。
 
 端点：
@@ -13,7 +13,7 @@
   GET  /raw/list           列出所有 .jsonl：{key, session_id, mtime, size}
   GET  /raw/file?key=...   返回该文件的原始字节（纯文本）
   GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
-  POST /queue/push         claude-switch 推入一条待发草稿 {session_id, text, id?}
+  POST /queue/push         Claude Usage Monitor 推入一条待发草稿 {session_id, text, id?}
   POST /api/shutdown       本机优雅关闭
 
 空闲超时自动退出，不留常驻后台。
@@ -127,7 +127,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self._json({'ok': False, 'error': 'forbidden'}, 403)
             return
         if path in ('/queue/push', '/queue'):
-            # claude-switch 把「预备发言」推到本机：写入 ~/.claude/launcher_queue.json，
+            # Claude Usage Monitor 把「预备发言」推到本机：写入 ~/.claude/launcher_queue.json，
             # 由本机启动器进入对话时消费。{session_id, text, id?}
             try:
                 length = int(self.headers.get('Content-Length', 0) or 0)
@@ -244,7 +244,7 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     print("=" * 56)
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
-    print(f"            （在另一台机器的 claude-switch「会话」里填这个地址）")
+    print(f"            （在另一台机器的 Claude Usage Monitor「会话」里填这个地址）")
     print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key=")
     if idle_timeout and idle_timeout > 0:
         print(f"  空闲退出 : {idle_timeout}s 无访问自动停止")

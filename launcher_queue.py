@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""启动器「预备发言」队列：claude-switch 推来的待发草稿，按 session_id 暂存。
+"""启动器「预备发言」队列：Claude Usage Monitor 推来的待发草稿，按 session_id 暂存。
 
 文件：~/.claude/launcher_queue.json
   {"version": 1, "queue": {"<session_id>": [{"id": "<uuid>", "text": "..."}, ...]}}
 
-写入方：claude-switch —— 本机由 Rust 直写此文件；远程经薄中继 POST /queue/push 写入本机此文件。
+写入方：Claude Usage Monitor —— 本机由 Rust 直写此文件；远程经薄中继 POST /queue/push 写入本机此文件。
 读取方：本启动器 —— 进入对话时取该会话的下一条草稿、逐字符打字注入、并移除。
 读改写用「临时文件 + os.replace」尽量原子；低频低并发，容忍偶发竞态（异常一律静默）。
 """
