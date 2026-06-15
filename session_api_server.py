@@ -1,18 +1,21 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Claude 会话数据本地 HTTP API（方案A：实时解析 JSONL，只读）
+"""Claude 会话「薄中继」HTTP 服务（只读、跨平台、纯标准库）。
 
-每台机器各跑一个，绑定 0.0.0.0 对局域网开放，供 claude-switch (Tauri)
-的「会话」横屏窗口聚合消费。跨 macOS / Windows，纯标准库无第三方依赖。
+每台机器各跑一个，绑 0.0.0.0:47800 对局域网开放。它**不解析、不建库**，
+只把本机 ~/.claude/projects 下的会话原始数据传出去，由 claude-switch (Rust)
+统一解析 + rusqlite 物化。本机数据 claude-switch 直接读文件系统、不经此中继；
+此中继只为「别的机器要读本机数据」而存在。
 
 端点：
-  GET /api/ping              心跳（不解析，最便宜，供断连检测）
-  GET /api/info              本机身份 + 会话/项目计数
-  GET /api/sessions          全部会话列表（标题/项目/时间/分支/大小）
-  GET /api/session/<id>      单会话消息时间轴（主人发言 + 回复）
-  GET /api/stats             按本地日期统计每天发言条数/字数
+  GET  /api/ping           心跳
+  GET  /api/info           本机身份（hostname/os）
+  GET  /raw/list           列出所有 .jsonl：{key, session_id, mtime, size}
+  GET  /raw/file?key=...   返回该文件的原始字节（纯文本）
+  POST /api/shutdown       本机优雅关闭
 
-用法：python session_api_server.py [port]   （默认端口 47800）
+空闲超时自动退出，不留常驻后台。
+用法：python session_api_server.py [port]   （默认 47800）
 """
 import os
 import sys
@@ -21,139 +24,142 @@ import time
 import socket
 import threading
 import platform
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, parse_qs
 
-from conversation_viewer import ConversationViewer
-
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
-# 会话窗口开着会持续心跳续命；窗口一关、超时后进程自动消失，不留常驻后台。
 IDLE_TIMEOUT_SECONDS = 900
-
-# 无需 launcher，仅用其解析能力
-viewer = ConversationViewer(None)
+PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # 最近一次被访问的时刻（单调时钟），看门狗据此判断空闲
 _state = {"last": 0.0}
 
 
-def _json_bytes(obj):
-    return json.dumps(obj, ensure_ascii=False).encode('utf-8')
+def _list_files():
+    """列出 ~/.claude/projects 下所有 .jsonl 的 key/session_id/mtime/size"""
+    out = []
+    if not PROJECTS_DIR.exists():
+        return out
+    for dir_name in os.listdir(PROJECTS_DIR):
+        dir_path = PROJECTS_DIR / dir_name
+        if not dir_path.is_dir():
+            continue
+        for fn in os.listdir(dir_path):
+            if not fn.endswith('.jsonl'):
+                continue
+            try:
+                st = (dir_path / fn).stat()
+            except OSError:
+                continue
+            out.append({
+                'key': f"{dir_name}/{fn}",
+                'session_id': fn[:-6],
+                'mtime': int(st.st_mtime),
+                'size': int(st.st_size),
+            })
+    return out
 
 
-class SessionAPIHandler(BaseHTTPRequestHandler):
-    server_version = "ClaudeSessionAPI/" + VERSION
+def _resolve_key(key):
+    """把 key 安全映射回 projects 下的真实文件，防目录穿越；非法返回 None"""
+    if not key or '..' in key:
+        return None
+    parts = key.replace('\\', '/').split('/')
+    if len(parts) != 2 or not parts[1].endswith('.jsonl'):
+        return None
+    fp = PROJECTS_DIR / parts[0] / parts[1]
+    try:
+        fp_resolved = fp.resolve()
+        root = PROJECTS_DIR.resolve()
+    except OSError:
+        return None
+    if root not in fp_resolved.parents:
+        return None
+    if not fp_resolved.is_file():
+        return None
+    return fp_resolved
 
-    def _send(self, obj, status=200):
-        body = _json_bytes(obj)
+
+class RelayHandler(BaseHTTPRequestHandler):
+    server_version = "ClaudeSessionRelay/" + VERSION
+
+    def _json(self, obj, status=200):
+        body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def _raw(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        """静默，避免刷屏（心跳轮询很频繁）"""
+        pass
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', '*')
         self.end_headers()
-
-    def log_message(self, *args):
-        """静默，避免刷屏（心跳轮询会很频繁）"""
-        pass
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip('/')
         if path in ('/api/shutdown', '/shutdown'):
-            # 仅允许本机优雅关闭（claude-switch 关闭会话窗口时调用）
+            # 仅允许本机优雅关闭
             if self.client_address[0] in ('127.0.0.1', '::1'):
-                self._send({'ok': True, 'shutting_down': True})
+                self._json({'ok': True, 'shutting_down': True})
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
-                self._send({'ok': False, 'error': 'forbidden'}, 403)
+                self._json({'ok': False, 'error': 'forbidden'}, 403)
             return
-        self._send({'ok': False, 'error': 'not found'}, 404)
+        self._json({'ok': False, 'error': 'not found'}, 404)
 
     def do_GET(self):
         _state["last"] = time.monotonic()  # 任意访问（含心跳）都续命
-        path = urlparse(self.path).path.rstrip('/')
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip('/')
         try:
             if path in ('/api/ping', '/ping'):
-                self._send({'ok': True, 'pong': True})
+                self._json({'ok': True, 'pong': True})
             elif path in ('/api/info', '/info', ''):
-                self._send(self._info())
-            elif path in ('/api/sessions', '/sessions'):
-                self._send(self._sessions())
-            elif path.startswith('/api/session/'):
-                sid = unquote(path[len('/api/session/'):])
-                self._send(self._session(sid))
-            elif path in ('/api/stats', '/stats'):
-                self._send(self._stats())
+                self._json({
+                    'ok': True,
+                    'service': 'claude-session-relay',
+                    'version': VERSION,
+                    'hostname': socket.gethostname(),
+                    'os': platform.system(),
+                    'platform': sys.platform,
+                })
+            elif path in ('/raw/list', '/raw'):
+                self._json({
+                    'ok': True,
+                    'hostname': socket.gethostname(),
+                    'files': _list_files(),
+                })
+            elif path == '/raw/file':
+                key = (parse_qs(parsed.query).get('key', [''])[0] or '').strip()
+                fp = _resolve_key(key)
+                if not fp:
+                    self._json({'ok': False, 'error': 'invalid key'}, 400)
+                    return
+                with open(fp, 'rb') as f:
+                    self._raw(f.read())
             else:
-                self._send({'ok': False, 'error': 'not found'}, 404)
+                self._json({'ok': False, 'error': 'not found'}, 404)
         except Exception as e:
-            self._send({'ok': False, 'error': str(e)}, 500)
-
-    # ---------- 各端点 ----------
-
-    def _info(self):
-        sessions = viewer.get_all_sessions_info()
-        projects = set(s.get('project_path', '') for s in sessions if s.get('project_path'))
-        return {
-            'ok': True,
-            'service': 'claude-session-api',
-            'version': VERSION,
-            'hostname': socket.gethostname(),
-            'os': platform.system(),
-            'platform': sys.platform,
-            'project_count': len(projects),
-            'session_count': len(sessions),
-        }
-
-    def _sessions(self):
-        sessions = viewer.get_all_sessions_info()
-        out = []
-        for s in sessions:
-            out.append({
-                'id': s['id'],
-                'title': s['title'],
-                'project_path': s.get('project_path', ''),
-                'project_name': s.get('project_name', ''),
-                'git_branch': s.get('git_branch', ''),
-                'last_unix': s.get('last_unix', 0),
-                'file_size': s.get('file_size', 0),
-                'size_human': viewer.format_file_size(s.get('file_size', 0)),
-            })
-        return {'ok': True, 'hostname': socket.gethostname(), 'sessions': out}
-
-    def _session(self, sid):
-        fp = viewer.find_session_file(sid)
-        if not fp:
-            return {'ok': False, 'error': 'session not found'}
-        info = viewer.get_session_info(fp)
-        cwd = viewer._read_cwd(fp) or ''
-        return {
-            'ok': True,
-            'id': sid,
-            'hostname': socket.gethostname(),
-            'title': info.get('title', '') if info else '',
-            'project_path': cwd,
-            'project_name': os.path.basename(cwd.rstrip('/\\')),
-            'git_branch': info.get('git_branch', '') if info else '',
-            'messages': viewer.get_session_messages(fp),
-        }
-
-    def _stats(self):
-        return {
-            'ok': True,
-            'hostname': socket.gethostname(),
-            'days': viewer.get_daily_stats(),
-        }
+            self._json({'ok': False, 'error': str(e)}, 500)
 
 
 class SessionHTTPServer(ThreadingHTTPServer):
@@ -164,7 +170,7 @@ class SessionHTTPServer(ThreadingHTTPServer):
 
 
 def _idle_watchdog(server, timeout):
-    """空闲超时自动退出：超过 timeout 秒无任何访问就停掉服务"""
+    """空闲超时自动退出"""
     if timeout <= 0:
         return
     check_interval = min(30, max(5, timeout // 4))
@@ -191,23 +197,21 @@ def get_lan_ip():
 
 def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     try:
-        server = SessionHTTPServer((host, port), SessionAPIHandler)
+        server = SessionHTTPServer((host, port), RelayHandler)
     except OSError:
-        # 端口被占用 = 已有实例在跑（多个 ccrun 同时启动时的竞态兜底），安静退出
-        print(f"端口 {port} 已被占用，可能已有会话 API 实例在运行，本次不重复启动")
+        print(f"端口 {port} 已被占用，可能已有中继实例在运行，本次不重复启动")
         return
     _state["last"] = time.monotonic()
     if idle_timeout and idle_timeout > 0:
         threading.Thread(target=_idle_watchdog, args=(server, idle_timeout), daemon=True).start()
     lan = get_lan_ip()
     print("=" * 56)
-    print(" Claude 会话 API 服务已启动")
+    print(" Claude 会话薄中继已启动")
     print("=" * 56)
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
-    print(f"            （在另一台机器的 Tauri「会话」里填这个地址）")
-    print(f"  端点     : /api/ping /api/info /api/sessions")
-    print(f"             /api/session/<id> /api/stats")
+    print(f"            （在另一台机器的 claude-switch「会话」里填这个地址）")
+    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key=")
     if idle_timeout and idle_timeout > 0:
         print(f"  空闲退出 : {idle_timeout}s 无访问自动停止")
     print(f"  Ctrl+C 停止")

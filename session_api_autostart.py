@@ -12,29 +12,10 @@
 """
 import os
 import sys
-import json
 import socket
 import subprocess
 
 DEFAULT_PORT = 47800
-# 公共注册文件：记录怎么拉起本机会话 API（python 解释器 + 脚本路径 + 端口）。
-# claude-switch 打开会话窗口时读它来确保本机服务在跑，用户无需手动配置路径。
-REGISTRY_PATH = os.path.join(os.path.expanduser("~"), ".claude_session_api.json")
-
-
-def _write_registry(port):
-    """写公共注册文件，记录本机会话 API 的启动方式（失败不影响主流程）"""
-    try:
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_api_server.py")
-        data = {
-            "python": sys.executable,
-            "script": script,
-            "port": port,
-        }
-        with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
 
 
 def is_running(port=DEFAULT_PORT, timeout=0.3):
@@ -58,9 +39,6 @@ def ensure_running(port=DEFAULT_PORT):
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_api_server.py")
         if not os.path.exists(script):
             return False
-
-        # 无论是否已在跑，都刷新注册文件，保证 claude-switch 拿到最新启动方式
-        _write_registry(port)
 
         if is_running(port):
             return False
