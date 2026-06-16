@@ -12,6 +12,7 @@
   GET  /api/info           本机身份（hostname/os）
   GET  /raw/list           列出所有 .jsonl：{key, session_id, mtime, size}
   GET  /raw/file?key=...   返回该文件的原始字节（纯文本）
+  GET  /api/token_summary?since_days=N  本机 token 用量摘要(date×provider×model)，供跨机器汇总
   GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
   POST /queue/push         Claude Usage Monitor 推入一条待发草稿 {session_id, text, id?}
   POST /api/shutdown       本机优雅关闭
@@ -30,7 +31,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
 IDLE_TIMEOUT_SECONDS = 900
@@ -182,6 +183,18 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 with open(fp, 'rb') as f:
                     self._raw(f.read())
+            elif path in ('/api/token_summary', '/token/summary'):
+                # 跨机器 token 汇总：本机扫 jsonl 算 token 摘要(按 date/provider/model)传出，
+                # 由对端 Claude Usage Monitor 合并。算法与其 Rust token_usage.rs 逐字段一致。
+                qs = parse_qs(parsed.query)
+                try:
+                    since_days = int((qs.get('since_days', ['400'])[0] or '400'))
+                except ValueError:
+                    since_days = 400
+                import token_summary
+                rep = token_summary.compute(since_days)
+                rep['hostname'] = socket.gethostname()
+                self._json(rep)
             elif path in ('/queue/list', '/queue'):
                 # 查看本机待发的预备发言队列（按 session_id 分组），供调试/校验
                 try:
@@ -272,7 +285,7 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
     print(f"            （在另一台机器的 Claude Usage Monitor「会话」里填这个地址）")
-    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key= /queue/push")
+    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key= /api/token_summary /queue/push")
     if advertiser is not None:
         print(f"  局域网发现: 已用 Bonjour 广播 _claude-relay._tcp（对端可零配置发现本机）")
     if idle_timeout and idle_timeout > 0:
