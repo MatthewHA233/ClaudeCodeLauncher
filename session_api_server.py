@@ -40,6 +40,49 @@ PROJECTS_DIR = Path.home() / ".claude" / "projects"
 # 最近一次被访问的时刻（单调时钟），看门狗据此判断空闲
 _state = {"last": 0.0}
 
+_machine_id_cache = None
+
+
+def machine_id():
+    """机器稳定标识：OS 原生硬件/系统 id，改名/换 IP/重装系统都不变。
+    对端据此把同一台机器永久绑定为同一来源（不再因 IP 变动而丢历史）。
+    macOS=IOPlatformUUID / Windows=注册表 MachineGuid / Linux=/etc/machine-id；
+    取不到时回退为 hostname 的稳定 hash（带 'h:' 前缀以示降级）。纯标准库实现。"""
+    global _machine_id_cache
+    if _machine_id_cache:
+        return _machine_id_cache
+    mid = ""
+    try:
+        sysname = platform.system()
+        if sysname == "Darwin":
+            import subprocess
+            out = subprocess.run(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            for line in out.splitlines():
+                if "IOPlatformUUID" in line:
+                    mid = line.split('"')[-2]
+                    break
+        elif sysname == "Windows":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Cryptography") as k:
+                mid = winreg.QueryValueEx(k, "MachineGuid")[0]
+        else:  # Linux / 其它
+            for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                if os.path.exists(p):
+                    mid = Path(p).read_text(encoding="utf-8", errors="ignore").strip()
+                    if mid:
+                        break
+    except Exception:
+        mid = ""
+    if not mid:
+        import hashlib
+        mid = "h:" + hashlib.sha1(socket.gethostname().encode("utf-8")).hexdigest()[:16]
+    _machine_id_cache = mid.strip()
+    return _machine_id_cache
+
 
 def _list_files():
     """列出 ~/.claude/projects 下所有 .jsonl 的 key/session_id/mtime/size"""
@@ -165,6 +208,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     'ok': True,
                     'service': 'claude-session-relay',
                     'version': VERSION,
+                    'machine_id': machine_id(),  # 机器稳定 id：对端据此绑定设备(换 IP/改名不变)
                     'hostname': socket.gethostname(),
                     'os': platform.system(),
                     'platform': sys.platform,
@@ -241,12 +285,13 @@ def _start_mdns_advertise(port):
     try:
         host = socket.gethostname()
         sysname = platform.system()
+        mid = machine_id()  # 机器稳定 id，放进 TXT 供对端零配置「按设备」绑定/配对
         if sysname == "Darwin" and shutil.which("dns-sd"):
             args = ["dns-sd", "-R", host, "_claude-relay._tcp", "local", str(port),
-                    f"os=macos", f"host={host}"]
+                    f"os=macos", f"host={host}", f"mid={mid}"]
         elif sysname == "Linux" and shutil.which("avahi-publish-service"):
             args = ["avahi-publish-service", host, "_claude-relay._tcp", str(port),
-                    "os=linux", f"host={host}"]
+                    "os=linux", f"host={host}", f"mid={mid}"]
         else:
             return None  # 其它平台暂不广播(对端仍可手动填地址)
         return subprocess.Popen(args, stdout=subprocess.DEVNULL,
