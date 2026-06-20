@@ -31,10 +31,12 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
-IDLE_TIMEOUT_SECONDS = 900
+# 设 0：本中继是「会话归档」的数据出口，别的机器随时可能来读，不该因本机没活动就退出
+# →常驻可达。单例由端口 bind 失败兜底，重启随 launcher 幂等自启，关机即没、pkill 可手动停。
+IDLE_TIMEOUT_SECONDS = 0
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 # 最近一次被访问的时刻（单调时钟），看门狗据此判断空闲
