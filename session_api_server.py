@@ -15,6 +15,8 @@
   GET  /api/token_summary?since_days=N  本机 token 用量摘要(date×provider×model)，供跨机器汇总
   GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
   POST /queue/push         Claude Usage Monitor 推入一条待发草稿 {session_id, text, id?}
+  POST /claims/set_registry 主控机下发 claim registry 地址 {url}（本机 hook 据此 acquire）
+  GET  /claims/registry    查看本机已存的 registry 地址
   POST /api/shutdown       本机优雅关闭
 
 空闲超时自动退出，不留常驻后台。
@@ -196,6 +198,28 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             self._json({'ok': bool(ok)}, 200 if ok else 500)
             return
+        if path in ('/claims/set_registry',):
+            # 主控机下发它的 claim registry 地址 {url}；本机写 claim_registry.json，
+            # 由本机 PreToolUse hook 据此向主控机 acquire（先来后到的跨机文件占用）。
+            try:
+                length = int(self.headers.get('Content-Length', 0) or 0)
+                raw = self.rfile.read(length) if length else b''
+                payload = json.loads(raw.decode('utf-8') or '{}')
+            except Exception as e:
+                self._json({'ok': False, 'error': f'bad json: {e}'}, 400)
+                return
+            url = (payload.get('url') or '').strip()
+            if not url:
+                self._json({'ok': False, 'error': 'url required'}, 400)
+                return
+            try:
+                import file_claims
+                ok = file_claims.set_registry(url)
+            except Exception as e:
+                self._json({'ok': False, 'error': str(e)}, 500)
+                return
+            self._json({'ok': bool(ok)}, 200 if ok else 500)
+            return
         self._json({'ok': False, 'error': 'not found'}, 404)
 
     def do_GET(self):
@@ -249,6 +273,14 @@ class RelayHandler(BaseHTTPRequestHandler):
                 except Exception:
                     q = {}
                 self._json({'ok': True, 'queue': q})
+            elif path in ('/claims/registry',):
+                # 查看本机已存的 registry 地址（调试/校验用；hook 直接读文件不经此）
+                try:
+                    import file_claims
+                    url = file_claims.get_registry()
+                except Exception:
+                    url = None
+                self._json({'ok': True, 'url': url})
             else:
                 self._json({'ok': False, 'error': 'not found'}, 404)
         except Exception as e:
