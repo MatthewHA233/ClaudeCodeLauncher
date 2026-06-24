@@ -96,17 +96,38 @@ def _git_root(path):
         cur = parent
 
 
+def _repo_id(git_root):
+    """仓库稳定标识：读 .git/config 的 remote origin url 取 'owner/repo'（跨机一致，
+    不受本地文件夹名影响）；取不到回退文件夹名。纯文件读，不调 git 命令。"""
+    import re
+    cfg = os.path.join(git_root, ".git", "config")
+    try:
+        with open(cfg, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+        m = re.search(r'\[remote "origin"\][^\[]*?url\s*=\s*(\S+)', text, re.S)
+        if not m:
+            m = re.search(r"url\s*=\s*(\S+)", text)  # 退而求其次：任意 remote 的 url
+        if m:
+            u = re.sub(r"\.git$", "", m.group(1).strip())
+            m2 = re.search(r"([^/:]+/[^/]+)$", u)  # 取末尾 owner/repo
+            if m2:
+                return m2.group(1)
+    except Exception:
+        pass
+    return os.path.basename(git_root.rstrip("/\\")) or "repo"
+
+
 def _norm_path(fp):
-    """claim key = 仓库名/相对仓库根路径；不在仓库内则退化为文件名。"""
+    """claim key = 仓库标识/相对仓库根路径。仓库标识取 git remote origin 的 owner/repo
+    （跨机一致，不靠本地文件夹名）；无 remote 回退文件夹名；不在仓库内则文件名。"""
     try:
         ap = os.path.abspath(fp)
     except Exception:
         return fp.replace("\\", "/")
     root = _git_root(ap)
     if root:
-        repo = os.path.basename(root.rstrip("/\\")) or "repo"
         rel = os.path.relpath(ap, root).replace("\\", "/")
-        return f"{repo}/{rel}"
+        return f"{_repo_id(root)}/{rel}"
     return os.path.basename(ap)
 
 
