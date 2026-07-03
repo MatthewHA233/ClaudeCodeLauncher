@@ -26,7 +26,16 @@ import hashlib
 from pathlib import Path
 from urllib import request as _req
 
-VERSION = "2.0.0"  # 感知层版（旧版是锁模型）
+# 中文 Windows 上 Python 的 stdin/stdout 默认 GBK，而 Claude Code 与 hook 之间收发的
+# 都是 UTF-8：不重配的话，中文路径经 stdin 变 mojibake（_git_root 找不到仓库 → 误判
+# 仓库外 → key 退化裸文件名），stdout 里的 emoji 直接 UnicodeEncodeError 静默丢注入。
+try:
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+VERSION = "2.1.0"  # 2.1: 仓库外不上报/不注入、同内容去重防重复注入、日志自动修剪、worktree 支持
 
 REGISTRY_FILE = Path.home() / ".claude" / "claim_registry.json"
 TIMEOUT = 3  # 秒：够局域网，且不拖慢 Claude（UserPromptSubmit 阻塞用户输入）
@@ -86,10 +95,11 @@ def _machine_id():
 # ---------- 路径规范化（跨机一致的 claim key） ----------
 
 def _git_root(path):
-    """从 path 向上找含 .git 的目录；找不到返回 None。"""
+    """从 path 向上找含 .git 的目录；找不到返回 None。
+    .git 可能是目录(普通仓库)也可能是文件(worktree/submodule 的 gitdir 指针)，都算。"""
     cur = os.path.dirname(path) if os.path.isfile(path) else path
     while True:
-        if os.path.isdir(os.path.join(cur, ".git")):
+        if os.path.exists(os.path.join(cur, ".git")):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:
@@ -97,11 +107,38 @@ def _git_root(path):
         cur = parent
 
 
+def _git_dir(git_root):
+    """root/.git 的真实 git 目录。普通仓库 .git 就是目录；worktree/submodule 的 .git
+    是「gitdir: 指针」文件，解析指向的目录。解析不了返回 None。"""
+    g = os.path.join(git_root, ".git")
+    if os.path.isdir(g):
+        return g
+    try:
+        with open(g, "r", encoding="utf-8", errors="ignore") as f:
+            line = f.read().strip()
+        if line.startswith("gitdir:"):
+            gd = line[len("gitdir:"):].strip()
+            if not os.path.isabs(gd):
+                gd = os.path.normpath(os.path.join(git_root, gd))
+            return gd
+    except Exception:
+        pass
+    return None
+
+
 def _repo_id(git_root):
     """仓库稳定标识：读 .git/config 的 remote origin url 取 'owner/repo'（跨机一致，
-    不受本地文件夹名影响）；取不到回退文件夹名。纯文件读，不调 git 命令。"""
+    不受本地文件夹名影响）；取不到回退文件夹名。纯文件读，不调 git 命令。
+    worktree 的 config 在主仓库 git 目录（顺 commondir 找过去）。"""
     import re
-    cfg = os.path.join(git_root, ".git", "config")
+    gd = _git_dir(git_root)
+    cfg = os.path.join(gd, "config") if gd else os.path.join(git_root, ".git", "config")
+    if gd and not os.path.exists(cfg):
+        try:
+            cd = (Path(gd) / "commondir").read_text(encoding="utf-8").strip()
+            cfg = os.path.normpath(os.path.join(gd, cd, "config"))
+        except Exception:
+            pass
     try:
         with open(cfg, "r", encoding="utf-8", errors="ignore") as f:
             text = f.read()
@@ -150,7 +187,10 @@ def _git_branch(path):
         root = _git_root(os.path.abspath(path or "."))
         if not root:
             return ""
-        with open(os.path.join(root, ".git", "HEAD"), "r", encoding="utf-8") as f:
+        gd = _git_dir(root)
+        if not gd:
+            return ""
+        with open(os.path.join(gd, "HEAD"), "r", encoding="utf-8") as f:
             line = f.read().strip()
         prefix = "ref: refs/heads/"
         if line.startswith(prefix):
@@ -196,9 +236,16 @@ def _ago(sec):
     return "%d小时前" % (sec // 3600)
 
 
-def _log_inject(event, session_id, raw_claims, injected_text):
+LOG_FILE = Path.home() / ".claude" / "claim_inject_log.jsonl"
+LOG_TRIM_BYTES = 2_000_000  # 超过即修剪（每条 prompt 都追加一行，不修剪会无限长）
+LOG_KEEP_DAYS = 7
+STATE_FILE = Path.home() / ".claude" / "claim_inject_state.json"  # 每会话上次注入内容的指纹（去重用）
+
+
+def _log_inject(event, session_id, raw_claims, injected_text, skipped=""):
     """把每次注入记到本地日志(jsonl 不记 hook 注入,我们自己记),供实时可视化。
-    记两样：registry 返回的【原始数据】+ 实际拼进上下文的【注入文本】。"""
+    记两样：registry 返回的【原始数据】+ 实际拼进上下文的【注入文本】。
+    skipped 非空 = 本次没注入及其原因（去重跳过/不在项目内），前端照样能核对。"""
     try:
         rec = {
             "ts": int(time.time()),
@@ -207,9 +254,70 @@ def _log_inject(event, session_id, raw_claims, injected_text):
             "raw_claims": raw_claims,     # registry 原样返回了什么(查投毒)
             "injected": injected_text,    # 实际注入 Claude 上下文的文本
         }
-        logf = Path.home() / ".claude" / "claim_inject_log.jsonl"
-        with open(logf, "a", encoding="utf-8") as f:
+        if skipped:
+            rec["skipped"] = skipped
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _trim_log()
+    except Exception:
+        pass
+
+
+def _trim_log():
+    """日志超限时只留最近 N 天（仍超则只留末 4000 行），临时文件原子替换。"""
+    try:
+        if LOG_FILE.stat().st_size <= LOG_TRIM_BYTES:
+            return
+        cutoff = int(time.time()) - LOG_KEEP_DAYS * 86400
+        kept = []
+        with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    if int(json.loads(line).get("ts") or 0) >= cutoff:
+                        kept.append(line)
+                except Exception:
+                    continue
+        if len(kept) > 4000:
+            kept = kept[-4000:]
+        tmp = str(LOG_FILE) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(kept) + ("\n" if kept else ""))
+        os.replace(tmp, LOG_FILE)
+    except Exception:
+        pass
+
+
+def _state_get(session_id):
+    """取该会话上次注入内容的指纹（没有则空串）。"""
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            st = json.load(f) or {}
+        return ((st.get(session_id) or {}).get("hash")) or ""
+    except Exception:
+        return ""
+
+
+def _state_set(session_id, h):
+    """记录该会话本次注入内容的指纹；顺手清 2 天没动静的会话。原子替换。"""
+    if not session_id:
+        return
+    try:
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                st = json.load(f) or {}
+        except Exception:
+            st = {}
+        now = int(time.time())
+        st[session_id] = {"hash": h, "ts": now}
+        st = {k: v for k, v in st.items()
+              if now - int((v or {}).get("ts") or 0) <= 172800}
+        tmp = str(STATE_FILE) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False)
+        os.replace(tmp, STATE_FILE)
     except Exception:
         pass
 
@@ -225,6 +333,14 @@ def cmd_report():
     tool_input = data.get("tool_input") or {}
     fp = (tool_input.get("file_path") or "").strip()
     if not fp:
+        return 0
+    # 仓库外文件不上报：其 key 会退化成裸文件名，跨项目/跨机器全局撞车（不同项目的
+    # 同名文件互相覆盖、互相注入 → 正是 ghidra-re-plan.md 串进别项目那类污染的根源）。
+    # 协作感知只对「同一个 git 项目」有意义，仓库外没有协作场景。
+    try:
+        if _git_root(os.path.abspath(fp)) is None:
+            return 0
+    except Exception:
         return 0
     path = _norm_path(fp)
     try:
@@ -243,16 +359,23 @@ def cmd_report():
 
 def cmd_context():
     """拉感知公告板，把"别的会话/机器最近在改啥"注入 Claude 上下文（advisory）。
-    按 session_id 排除自己这个会话（同机其他会话仍显示）。
-    每次都落注入日志（不管注没注），供实时可视化 + 查投毒。"""
-    base = _registry_url()
-    if not base:
-        return 0
+    - 只感知【同一个 git 项目(owner/repo)】的占用；仓库外会话没有协作范围 → 不注入。
+    - 按 session_id 排除自己这个会话（同机其他会话仍显示）。
+    - 同内容去重：UserPromptSubmit 每条都触发，内容(文件/机器/分支集合)没变就不再
+      重复注入 —— 反复注入同样几行正是上下文污染。SessionStart 不去重(上下文刚重建)。
+    - 每次都落注入日志（含跳过原因），供实时可视化 + 查投毒。"""
     data = _read_stdin_json()
     me_session = (data.get("session_id") or "").strip()
     event = data.get("hook_event_name") or "context"
     cwd = data.get("cwd") or os.getcwd()
     my_repo = _my_repo(cwd)       # 当前会话所属 git 项目(owner/repo)
+    if not my_repo:
+        # 仓库外会话（桌面/临时目录/ghidra 分析这类）：没有可协作的项目范围，不拉不注入
+        _log_inject(event, me_session, [], "", skipped="会话不在 git 项目内，无协作感知范围")
+        return 0
+    base = _registry_url()
+    if not base:
+        return 0
     my_branch = _git_branch(cwd)  # 当前分支：区分"同分支真冲突" vs "别分支不影响"
     try:
         out = _get(_join(base, "/claims/list"))
@@ -265,15 +388,20 @@ def cmd_context():
         sid = c.get("session_id") or ""
         if me_session and sid == me_session:
             continue  # 排除自己这个会话
-        # 项目过滤：只感知【同一个 git 项目(owner/repo)】的占用。claim key 形如
-        # "owner/repo/相对路径"，故按 "my_repo/" 前缀匹配。my_repo 取不到(当前不在
-        # git 项目里)则兜底不过滤，避免误杀。别的项目改啥与本会话无关，不注入。
+        # 项目过滤：claim key 形如 "owner/repo/相对路径"，按前缀匹配同项目
         path = c.get("path") or ""
-        if my_repo and not path.startswith(my_repo + "/"):
+        if not path.startswith(my_repo + "/"):
             continue
         others.append(c)
     injected = ""
+    fingerprint = ""
     if others:
+        key_items = sorted(
+            [[c.get("path") or "", c.get("machine_id") or "", c.get("branch") or ""] for c in others]
+        )
+        fingerprint = hashlib.sha1(
+            json.dumps(key_items, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
         lines = ["👀 协作感知 · 同项目其他会话/机器最近在改："]
         for c in others:
             path = c.get("path") or "?"
@@ -285,8 +413,17 @@ def cmd_context():
             note = " · (别分支 %s·不影响)" % cbranch if (cbranch and my_branch and cbranch != my_branch) else ""
             lines.append("   %s · %s · %s%s" % (name, who, _ago(now - touched), note))
         injected = "\n".join(lines)
-    # 落日志：registry 原始返回 + 实际注入文本（即便没注入也记，便于查"registry 返回了啥"）
-    _log_inject(event, me_session, raw_claims, injected)
+    # 同内容去重（仅 UserPromptSubmit；指纹=文件/机器/分支集合，时间变化不算变）。
+    # 集合变空会把指纹清掉 → 淡出后再出现会重新注入。
+    skipped = ""
+    if event == "UserPromptSubmit" and me_session and fingerprint \
+            and fingerprint == _state_get(me_session):
+        skipped = "内容与上次注入相同，跳过重复注入"
+        injected = ""
+    else:
+        _state_set(me_session, fingerprint)
+    # 落日志：registry 原始返回 + 实际注入文本 + 跳过原因（没注入也记，便于核对）
+    _log_inject(event, me_session, raw_claims, injected, skipped)
     if injected:
         sys.stdout.write(injected + "\n")
     return 0
