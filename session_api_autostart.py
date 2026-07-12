@@ -15,6 +15,7 @@ import sys
 import json
 import socket
 import subprocess
+import platform
 from pathlib import Path
 
 DEFAULT_PORT = 47800
@@ -47,6 +48,15 @@ def ensure_running(port=DEFAULT_PORT):
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_api_server.py")
         if not os.path.exists(script):
             return False
+
+        # macOS 上顺手铺 LaunchAgent：即使以后只用 Codex Desktop、不再经过启动器，
+        # 下次登录仍会自动启动同一个 Claude/Codex session relay。
+        if platform.system() == "Darwin":
+            try:
+                from install_macos_relay import install
+                install(port, restart=False)
+            except Exception:
+                pass
 
         if is_running(port):
             return False

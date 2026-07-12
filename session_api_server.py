@@ -1,17 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Claude 会话「薄中继」HTTP 服务（只读、跨平台、纯标准库）。
+"""Claude / Codex 会话「薄中继」HTTP 服务（只读、跨平台、纯标准库）。
 
 每台机器各跑一个，绑 0.0.0.0:47800 对局域网开放。它**不解析、不建库**，
-只把本机 ~/.claude/projects 下的会话原始数据传出去，由 Claude Usage Monitor (Rust)
+只把本机 Claude / Codex 会话原始数据传出去，由 Claude Usage Monitor (Rust)
 统一解析 + rusqlite 物化。本机数据 Claude Usage Monitor 直接读文件系统、不经此中继；
 此中继只为「别的机器要读本机数据」而存在。
 
 端点：
   GET  /api/ping           心跳
   GET  /api/info           本机身份（hostname/os）
-  GET  /raw/list           列出所有 .jsonl：{key, session_id, mtime, size}
-  GET  /raw/file?key=...   返回该文件的原始字节（纯文本）
+  GET  /raw/list?provider=claude_code|codex
+                            列出对应 provider 的 .jsonl
+  GET  /raw/file?provider=...&key=...
+                            返回对应会话文件的原始字节（纯文本）
   GET  /api/token_summary?since_days=N  本机 token 用量摘要(date×provider×model)，供跨机器汇总
   GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
   POST /queue/push         Claude Usage Monitor 推入一条待发草稿 {session_id, text, id?}
@@ -33,13 +35,17 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
 # 设 0：本中继是「会话归档」的数据出口，别的机器随时可能来读，不该因本机没活动就退出
 # →常驻可达。单例由端口 bind 失败兜底，重启随 launcher 幂等自启，关机即没、pkill 可手动停。
 IDLE_TIMEOUT_SECONDS = 0
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+CLAUDE_PROVIDER = "claude_code"
+CODEX_PROVIDER = "codex"
+RAW_PROVIDERS = (CLAUDE_PROVIDER, CODEX_PROVIDER)
 
 # 最近一次被访问的时刻（单调时钟），看门狗据此判断空闲
 _state = {"last": 0.0}
@@ -88,8 +94,21 @@ def machine_id():
     return _machine_id_cache
 
 
-def _list_files():
-    """列出 ~/.claude/projects 下所有 .jsonl 的 key/session_id/mtime/size"""
+def _file_entry(fp, key):
+    try:
+        st = fp.stat()
+    except OSError:
+        return None
+    return {
+        'key': key,
+        'session_id': fp.stem,
+        'mtime': int(st.st_mtime),
+        'size': int(st.st_size),
+    }
+
+
+def _list_claude_files():
+    """列出 ~/.claude/projects 下所有 Claude JSONL（保持旧 key 格式）。"""
     out = []
     if not PROJECTS_DIR.exists():
         return out
@@ -100,30 +119,66 @@ def _list_files():
         for fn in os.listdir(dir_path):
             if not fn.endswith('.jsonl'):
                 continue
-            try:
-                st = (dir_path / fn).stat()
-            except OSError:
-                continue
-            out.append({
-                'key': f"{dir_name}/{fn}",
-                'session_id': fn[:-6],
-                'mtime': int(st.st_mtime),
-                'size': int(st.st_size),
-            })
+            entry = _file_entry(dir_path / fn, f"{dir_name}/{fn}")
+            if entry:
+                out.append(entry)
     return out
 
 
-def _resolve_key(key):
-    """把 key 安全映射回 projects 下的真实文件，防目录穿越；非法返回 None"""
+def _list_codex_files():
+    """列出 $CODEX_HOME/sessions + archived_sessions 下所有 Codex rollout。"""
+    out = []
+    for root_name in ("sessions", "archived_sessions"):
+        root = CODEX_HOME / root_name
+        if not root.exists():
+            continue
+        try:
+            files = root.rglob("*.jsonl")
+            for fp in files:
+                if not fp.is_file():
+                    continue
+                try:
+                    key = fp.relative_to(CODEX_HOME).as_posix()
+                except ValueError:
+                    continue
+                entry = _file_entry(fp, key)
+                if entry:
+                    out.append(entry)
+        except OSError:
+            continue
+    return out
+
+
+def _list_files(provider=CLAUDE_PROVIDER):
+    if provider == CLAUDE_PROVIDER:
+        return _list_claude_files()
+    if provider == CODEX_PROVIDER:
+        return _list_codex_files()
+    return []
+
+
+def _resolve_key(key, provider=CLAUDE_PROVIDER):
+    """按 provider 安全映射 key，严格限制在对应会话根目录内。"""
     if not key or '..' in key:
         return None
     parts = key.replace('\\', '/').split('/')
-    if len(parts) != 2 or not parts[1].endswith('.jsonl'):
+    if any(not part for part in parts) or not parts[-1].endswith('.jsonl'):
         return None
-    fp = PROJECTS_DIR / parts[0] / parts[1]
+    if provider == CLAUDE_PROVIDER:
+        if len(parts) != 2:
+            return None
+        root = PROJECTS_DIR
+        fp = root / parts[0] / parts[1]
+    elif provider == CODEX_PROVIDER:
+        if parts[0] not in ("sessions", "archived_sessions"):
+            return None
+        root = CODEX_HOME / parts[0]
+        fp = CODEX_HOME.joinpath(*parts)
+    else:
+        return None
     try:
         fp_resolved = fp.resolve()
-        root = PROJECTS_DIR.resolve()
+        root = root.resolve()
     except OSError:
         return None
     if root not in fp_resolved.parents:
@@ -238,16 +293,25 @@ class RelayHandler(BaseHTTPRequestHandler):
                     'hostname': socket.gethostname(),
                     'os': platform.system(),
                     'platform': sys.platform,
+                    'raw_providers': list(RAW_PROVIDERS),
                 })
             elif path in ('/raw/list', '/raw'):
+                qs = parse_qs(parsed.query)
+                provider = (qs.get('provider', [CLAUDE_PROVIDER])[0] or CLAUDE_PROVIDER).strip()
+                if provider not in RAW_PROVIDERS:
+                    self._json({'ok': False, 'error': 'invalid provider'}, 400)
+                    return
                 self._json({
                     'ok': True,
                     'hostname': socket.gethostname(),
-                    'files': _list_files(),
+                    'provider': provider,
+                    'files': _list_files(provider),
                 })
             elif path == '/raw/file':
-                key = (parse_qs(parsed.query).get('key', [''])[0] or '').strip()
-                fp = _resolve_key(key)
+                qs = parse_qs(parsed.query)
+                provider = (qs.get('provider', [CLAUDE_PROVIDER])[0] or CLAUDE_PROVIDER).strip()
+                key = (qs.get('key', [''])[0] or '').strip()
+                fp = _resolve_key(key, provider)
                 if not fp:
                     self._json({'ok': False, 'error': 'invalid key'}, 400)
                     return
@@ -364,7 +428,7 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
     print(f"            （在另一台机器的 Claude Usage Monitor「会话」里填这个地址）")
-    print(f"  端点     : /api/ping /api/info /raw/list /raw/file?key= /api/token_summary /queue/push")
+    print(f"  端点     : /api/ping /api/info /raw/list?provider= /raw/file?provider=&key= /api/token_summary /queue/push")
     if advertiser is not None:
         print(f"  局域网发现: 已用 Bonjour 广播 _claude-relay._tcp（对端可零配置发现本机）")
     if idle_timeout and idle_timeout > 0:

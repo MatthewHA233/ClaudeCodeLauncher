@@ -6,7 +6,7 @@
 
 ## 角色：本启动器 = Claude Usage Monitor 会话功能的「每台机器的桥」
 
-Claude Usage Monitor 的「会话」窗口要聚合**本机 + 局域网各机器**的 Claude Code 会话数据，
+Claude Usage Monitor 的「会话」窗口要聚合**本机 + 局域网各机器**的 Claude Code / Codex 会话数据，
 但它只跑在某台 Windows 上。于是**每台机器各跑一个本启动器自带的薄中继**，对外暴露本机数据；
 Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 
@@ -21,14 +21,15 @@ Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 | 方向 | 端点 | 说明 |
 |------|------|------|
 | 读 | `GET /api/ping` | 心跳（Claude Usage Monitor 检测在线） |
-| 读 | `GET /api/info` | 本机身份 `{hostname, os, platform}` |
-| 读 | `GET /raw/list` | 列全部 `.jsonl`：`{key, session_id, mtime, size}`（key=`<dir>/<file>.jsonl`） |
-| 读 | `GET /raw/file?key=...` | 返回该会话文件原始字节（Claude Usage Monitor 自己解析） |
+| 读 | `GET /api/info` | 本机身份及 `raw_providers` 能力 |
+| 读 | `GET /raw/list?provider=claude_code\|codex` | 列对应 provider 的 `.jsonl`；省略 provider 保持旧版 Claude 行为 |
+| 读 | `GET /raw/file?provider=...&key=...` | 返回对应会话文件原始字节（Claude Usage Monitor 自己解析） |
 | 写 | `POST /queue/push` | Claude Usage Monitor 把「预备发言」推到本机：`{session_id, text, id?}` → 入队 |
 | 写 | `GET /queue/list` | 查看本机待发队列（调试用） |
 | — | `POST /api/shutdown` | 仅本机优雅关闭 |
 
-`/raw/file` 的 `key` 经 `_resolve_key()` 严格校验（必须 `<dir>/<file>.jsonl`、禁 `..`、限定在 projects 内）。
+`/raw/file` 的 `key` 经 `_resolve_key()` 严格校验：Claude 限定在 `~/.claude/projects`；Codex 限定在
+`$CODEX_HOME/sessions|archived_sessions`，均禁止目录穿越。
 空闲 `IDLE_TIMEOUT_SECONDS`（默认 900s）无访问自动退出，不留常驻后台。
 
 **局域网发现（mDNS / Bonjour）**：`_start_mdns_advertise(port)` 启动时广播 `_claude-relay._tcp`，
@@ -41,6 +42,9 @@ Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 `ensure_running()` 幂等拉起中继（已在跑则跳过、否则 detached 不弹窗启动），由
 `claude_launcher.py` / `codex_launcher.py` 进入主流程时调用。多个 ccrun 窗口同时启动时，
 靠中继端 `allow_reuse_address=False` 的 bind 失败兜底，保证全局单例。
+
+macOS 不再依赖启动器持续拉起：运行一次 `python3 install_macos_relay.py` 会安装
+`~/Library/LaunchAgents/com.matthew.claude-session-relay.plist`，登录后自动启动同一个 relay。
 
 ## 预备发言：Claude Usage Monitor → 本启动器 → 实时打进正在跑的对话
 
