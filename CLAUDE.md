@@ -24,13 +24,16 @@ Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 | 读 | `GET /api/info` | 本机身份及 `raw_providers` 能力 |
 | 读 | `GET /raw/list?provider=claude_code\|codex` | 列对应 provider 的 `.jsonl`；省略 provider 保持旧版 Claude 行为 |
 | 读 | `GET /raw/file?provider=...&key=...` | 返回对应会话文件原始字节（Claude Usage Monitor 自己解析） |
+| 读 | `GET /raw/image?provider=codex&key=...&path=...` | 返回该 rollout 实际引用的截图字节；拒绝任意路径读取 |
 | 写 | `POST /queue/push` | Claude Usage Monitor 把「预备发言」推到本机：`{session_id, text, id?}` → 入队 |
 | 写 | `GET /queue/list` | 查看本机待发队列（调试用） |
 | — | `POST /api/shutdown` | 仅本机优雅关闭 |
 
 `/raw/file` 的 `key` 经 `_resolve_key()` 严格校验：Claude 限定在 `~/.claude/projects`；Codex 限定在
 `$CODEX_HOME/sessions|archived_sessions`，均禁止目录穿越。
-空闲 `IDLE_TIMEOUT_SECONDS`（默认 900s）无访问自动退出，不留常驻后台。
+`/raw/image` 还会逐行核对指定 rollout，只承认 `event_msg.user_message.local_images` 或实际
+`view_image` / `screenshot` 工具入参中的同一路径；仅放行常见栅格图片且最大 32 MiB。
+`IDLE_TIMEOUT_SECONDS=0`，中继常驻到关机或显式停止，供别的机器随时归档。
 
 **局域网发现（mDNS / Bonjour）**：`_start_mdns_advertise(port)` 启动时广播 `_claude-relay._tcp`，
 让对端 Claude Usage Monitor「添加来源」零配置发现本机（免手输 IP）。保持**纯标准库**：不引 zeroconf，
@@ -72,7 +75,7 @@ claude **共用同一个控制台**，所以后台线程仍能 `WriteConsoleInpu
 
 ## 改这块时的注意
 
-- `/raw/list`、`/raw/file`、`/api/ping`、`/api/info` 是 Claude Usage Monitor 的硬依赖：**字段名、`key` 格式不要改**。
+- `/raw/list`、`/raw/file`、`/raw/image`、`/api/ping`、`/api/info` 是 Claude Usage Monitor 的硬依赖：**字段名、`key` 格式不要改**。
   对应的 Rust 解析在 Claude Usage Monitor 的 `src-tauri/src/session_store.rs`（`sync_remote`）。
 - `~/.claude/projects` 下的 JSONL 是只读来源，中继**只读不写**。
 - 真正的会话解析/物化逻辑在 Claude Usage Monitor（Rust），本仓库不要重新实现一套解析。

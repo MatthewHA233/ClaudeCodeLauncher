@@ -14,6 +14,8 @@
                             列出对应 provider 的 .jsonl
   GET  /raw/file?provider=...&key=...
                             返回对应会话文件的原始字节（纯文本）
+  GET  /raw/image?provider=codex&key=...&path=...
+                            仅返回该 rollout 实际引用的本机截图字节
   GET  /api/token_summary?since_days=N  本机 token 用量摘要(date×provider×model)，供跨机器汇总
   GET  /queue/list         查看本机待发的「预备发言」队列（按 session_id 分组）
   POST /queue/push         Claude Usage Monitor 推入一条待发草稿 {session_id, text, id?}
@@ -31,11 +33,12 @@ import time
 import socket
 import threading
 import platform
+import re
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
 # 设 0：本中继是「会话归档」的数据出口，别的机器随时可能来读，不该因本机没活动就退出
@@ -46,6 +49,8 @@ CODEX_HOME = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
 CLAUDE_PROVIDER = "claude_code"
 CODEX_PROVIDER = "codex"
 RAW_PROVIDERS = (CLAUDE_PROVIDER, CODEX_PROVIDER)
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+MAX_IMAGE_BYTES = 32 * 1024 * 1024
 
 # 最近一次被访问的时刻（单调时钟），看门狗据此判断空闲
 _state = {"last": 0.0}
@@ -188,6 +193,149 @@ def _resolve_key(key, provider=CLAUDE_PROVIDER):
     return fp_resolved
 
 
+def _decode_js_string_literal(source):
+    """只解码 view_image 入参里的 JS 字符串字面量；不执行 JavaScript。"""
+    source = source.lstrip()
+    if not source or source[0] not in ('"', "'", '`'):
+        return None
+    quote = source[0]
+    if quote == '"':
+        try:
+            value, _ = json.JSONDecoder().raw_decode(source)
+            return value if isinstance(value, str) else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+    if quote == '`' and '${' in source:
+        return None
+    out = []
+    escaped = False
+    for ch in source[1:]:
+        if escaped:
+            out.append({'n': '\n', 'r': '\r', 't': '\t'}.get(ch, ch))
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch == quote:
+            return ''.join(out)
+        else:
+            out.append(ch)
+    return None
+
+
+def _nested_view_image_paths(source):
+    """提取 Codex Desktop 外层 exec 中明确的 tools.view_image({path: ...}) 路径。"""
+    if not isinstance(source, str):
+        return []
+    marker = 'tools.view_image({'
+    out = []
+    offset = 0
+    while True:
+        call = source.find(marker, offset)
+        if call < 0:
+            break
+        body_start = call + len(marker)
+        body_end = source.find('})', body_start)
+        if body_end < 0:
+            break
+        body = source[body_start:body_end]
+        match = re.search(r'\b(?:path|file_path)\s*:\s*', body)
+        if match:
+            decoded = _decode_js_string_literal(body[match.end():])
+            if decoded:
+                out.append(decoded)
+        offset = body_end + 2
+    return out
+
+
+def _image_value_path(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ('path', 'file_path', 'image_url', 'url'):
+            if isinstance(value.get(key), str):
+                return value[key]
+    return None
+
+
+def _tool_image_paths(payload):
+    name = str(payload.get('name') or '').lower()
+    raw = payload.get('input')
+    parsed = raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+    out = []
+    if 'view_image' in name or 'screenshot' in name:
+        value = _image_value_path(parsed)
+        if value:
+            out.append(value)
+    if name == 'exec' and isinstance(raw, str):
+        out.extend(_nested_view_image_paths(raw))
+    return out
+
+
+def _same_resolved_path(raw_path, target):
+    if not isinstance(raw_path, str) or not raw_path.strip() or ';base64,' in raw_path:
+        return False
+    try:
+        candidate = Path(raw_path).expanduser()
+        return candidate.is_absolute() and candidate.resolve() == target
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _rollout_references_image(rollout, target):
+    """只承认 Codex 真实图片字段/工具入参里的路径，普通聊天文本提到路径不算授权。"""
+    try:
+        lines = rollout.open('r', encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    with lines:
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            kind = item.get('type')
+            payload = item.get('payload') or {}
+            candidates = []
+            if kind == 'event_msg' and payload.get('type') == 'user_message':
+                for field in ('local_images', 'images'):
+                    for value in payload.get(field) or []:
+                        path = _image_value_path(value)
+                        if path:
+                            candidates.append(path)
+            elif kind == 'response_item' and payload.get('type') in (
+                'custom_tool_call', 'function_call'
+            ):
+                candidates.extend(_tool_image_paths(payload))
+            if any(_same_resolved_path(path, target) for path in candidates):
+                return True
+    return False
+
+
+def _resolve_codex_image(key, image_path):
+    """把 key + rollout 内已引用的图片路径解析成文件；拒绝任意路径读取。"""
+    rollout = _resolve_key(key, CODEX_PROVIDER)
+    if not rollout or not image_path:
+        return None
+    try:
+        target = Path(image_path).expanduser()
+        if not target.is_absolute():
+            return None
+        target = target.resolve()
+        stat = target.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not target.is_file() or target.suffix.lower() not in IMAGE_EXTENSIONS:
+        return None
+    if stat.st_size <= 0 or stat.st_size > MAX_IMAGE_BYTES:
+        return None
+    return target if _rollout_references_image(rollout, target) else None
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "ClaudeSessionRelay/" + VERSION
 
@@ -203,6 +351,15 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _raw(self, data, status=200):
         self.send_response(status)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _image(self, data, content_type):
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -317,6 +474,29 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 with open(fp, 'rb') as f:
                     self._raw(f.read())
+            elif path == '/raw/image':
+                qs = parse_qs(parsed.query)
+                provider = (qs.get('provider', [''])[0] or '').strip()
+                key = (qs.get('key', [''])[0] or '').strip()
+                image_path = (qs.get('path', [''])[0] or '').strip()
+                if provider != CODEX_PROVIDER or not key or not image_path:
+                    self._json({'ok': False, 'error': 'provider=codex, key and path required'}, 400)
+                    return
+                fp = _resolve_codex_image(key, image_path)
+                if not fp:
+                    # 不区分“不存在”和“未被引用”，避免把端点变成文件存在性探针。
+                    self._json({'ok': False, 'error': 'image not available'}, 404)
+                    return
+                mime = {
+                    '.png': 'image/png',
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp',
+                    '.bmp': 'image/bmp',
+                }[fp.suffix.lower()]
+                with open(fp, 'rb') as f:
+                    self._image(f.read(), mime)
             elif path in ('/api/token_summary', '/token/summary'):
                 # 跨机器 token 汇总：本机扫 jsonl 算 token 摘要(按 date/provider/model)传出，
                 # 由对端 Claude Usage Monitor 合并。算法与其 Rust token_usage.rs 逐字段一致。
@@ -428,7 +608,7 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     print(f"  本机访问 : http://127.0.0.1:{port}/api/info")
     print(f"  局域网   : http://{lan}:{port}/api/info")
     print(f"            （在另一台机器的 Claude Usage Monitor「会话」里填这个地址）")
-    print(f"  端点     : /api/ping /api/info /raw/list?provider= /raw/file?provider=&key= /api/token_summary /queue/push")
+    print(f"  端点     : /api/ping /api/info /raw/list /raw/file /raw/image /api/token_summary /queue/push")
     if advertiser is not None:
         print(f"  局域网发现: 已用 Bonjour 广播 _claude-relay._tcp（对端可零配置发现本机）")
     if idle_timeout and idle_timeout > 0:
