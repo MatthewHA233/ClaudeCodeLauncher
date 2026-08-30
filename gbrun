@@ -1,0 +1,4 @@
+#!/bin/bash
+# macOS 全局命令：一键启动 Grok Launcher
+cd "$(dirname "$0")"
+python3 grok_launcher.py

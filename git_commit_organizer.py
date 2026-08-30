@@ -1,6 +1,6 @@
 """
 Git提交整理模块 - 为AI沟通提供学习语境材料
-支持Claude Code和Codex启动器共享使用
+支持Claude Code、Codex 和 Grok 启动器共享使用
 """
 
 import os
@@ -357,6 +357,9 @@ Git Diff详情：
             # 直接执行AI命令，添加项目目录访问权限
             if agent_type == "claude":
                 cmd = ["claude.cmd", "--add-dir", ".", "--verbose", "-p"]
+            elif agent_type == "grok":
+                grok_bin = str(Path.home() / ".grok" / "bin" / ("grok.exe" if os.name == "nt" else "grok"))
+                cmd = [grok_bin if os.path.exists(grok_bin) else "grok", "-p"]
             else:
                 cmd = [agent_type]
 
@@ -606,6 +609,7 @@ Git Diff详情：
         options = [
             "使用 Claude 分析",
             "使用 Codex 分析",
+            "使用 Grok 分析",
             "取消"
         ]
 
@@ -615,6 +619,8 @@ Git Diff详情：
             return "claude"
         elif choice == 1:
             return "codex"
+        elif choice == 2:
+            return "grok"
         else:
             return None
 

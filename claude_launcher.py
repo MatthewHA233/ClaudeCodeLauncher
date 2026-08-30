@@ -237,6 +237,9 @@ class ClaudeLauncher:
                 elif "使用 Codex 分析" in option:
                     color = Fore.GREEN
                     icon = "🤖"
+                elif "使用 Grok 分析" in option:
+                    color = Fore.MAGENTA
+                    icon = "🤖"
                 elif "查看对话历史记录" in option:
                     color = Fore.CYAN
                     icon = "📜"
@@ -1088,23 +1091,42 @@ class ClaudeLauncher:
         print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
         self._wait_for_key()
 
-    def switch_to_codex_launcher(self):
-        """切换到Codex启动器"""
-        self.clear_screen()
-        print(f"{Fore.CYAN}🔄 正在切换到 Codex 启动器...{Style.RESET_ALL}")
-        time.sleep(0.5)
-
-        # 获取当前脚本目录
+    def switch_launcher(self):
+        """切换到 Codex / Grok 启动器。选中后返回 True，取消返回 False。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        codex_launcher_path = os.path.join(current_dir, "codex_launcher.py")
+        catalog = [
+            ("Codex 启动器", "codex_launcher.py"),
+            ("Grok 启动器", "grok_launcher.py"),
+        ]
+        options = []
+        files = []
+        for name, filename in catalog:
+            path = os.path.join(current_dir, filename)
+            if os.path.exists(path):
+                options.append(f"切换到 {name}")
+                files.append(path)
 
-        if os.path.exists(codex_launcher_path):
-            # 运行Codex启动器
-            subprocess.run([sys.executable, codex_launcher_path])
-        else:
-            print(f"{Fore.RED}❌ 未找到 Codex 启动器文件: {codex_launcher_path}{Style.RESET_ALL}")
+        if not options:
+            self.clear_screen()
+            print(f"{Fore.RED}❌ 未找到可切换的启动器{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self._wait_for_key()
+            return False
+
+        options.append("返回")
+        choice = self.select_from_menu(options, "🔄 切换启动器")
+        if choice == -1 or choice == len(options) - 1:
+            return False
+
+        self.clear_screen()
+        print(f"{Fore.CYAN}🔄 正在切换到 {options[choice].replace('切换到 ', '')}...{Style.RESET_ALL}")
+        time.sleep(0.5)
+        subprocess.run([sys.executable, files[choice]])
+        return True
+
+    def switch_to_codex_launcher(self):
+        """兼容旧调用：打开切换菜单。"""
+        return self.switch_launcher()
 
     def update_recent_path(self, path):
         """更新最近使用的路径"""
@@ -1535,8 +1557,8 @@ class ClaudeLauncher:
             elif choice == -7:  # S键设置
                 self.show_settings()
             elif choice == -8:  # Q键切换
-                self.switch_to_codex_launcher()
-                break  # 切换后退出当前启动器
+                if self.switch_launcher():
+                    break  # 切换后退出当前启动器
             elif choice == -9:  # W键启动服务端
                 self.start_websocket_server()
             elif choice == -10:  # T键定时激活
