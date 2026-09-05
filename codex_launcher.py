@@ -757,25 +757,15 @@ class CodexLauncher:
         self.clear_screen()
         print(f"{Fore.CYAN}🚀 启动 Codex...{Style.RESET_ALL}")
 
-        drive = path[0] + ":"
-
-        # 构建命令序列
-        commands = [
-            drive,
-            f'cd "{path}"'
-        ]
-
-        # 只有在开启代理时才设置代理环境变量
+        # 直接传递子进程环境，避免 cmd 的 set ... && 把分隔符前空格写入代理值。
+        child_env = os.environ.copy()
         if self.config.get("use_proxy", True):
-            commands.extend([
-                f'set https_proxy={self.proxy_url}',
-                f'set http_proxy={self.proxy_url}'
-            ])
+            proxy_url = self.proxy_url.strip()
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                child_env[name] = proxy_url
             proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
         else:
             proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
-
-        commands.append(command)
 
         # 显示执行信息
         print(f"\n{Fore.GREEN}📍 工作目录: {Fore.WHITE}{path}{Style.RESET_ALL}")
@@ -783,8 +773,7 @@ class CodexLauncher:
         print(f"{proxy_info}\n")
 
         # 执行命令
-        cmd_string = " && ".join(commands)
-        subprocess.run(cmd_string, shell=True)
+        subprocess.run(command, shell=True, cwd=path, env=child_env)
 
     def handle_path_selection(self, path):
         """处理路径选择后的操作"""
