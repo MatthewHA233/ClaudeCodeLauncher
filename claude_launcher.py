@@ -11,6 +11,7 @@ import random
 from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
 from conversation_viewer import ConversationViewer
+import launcher_config
 
 # 跨平台键盘输入支持
 if os.name == 'nt':  # Windows
@@ -23,7 +24,6 @@ init(autoreset=True)
 
 class ClaudeLauncher:
     def __init__(self):
-        self.config_file = Path.home() / ".claude_launcher_config.json"
         self.config = self.load_config()
         self.proxy_url = "http://127.0.0.1:7890"
         self.animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -58,10 +58,6 @@ class ClaudeLauncher:
         
     def load_config(self):
         """加载配置文件"""
-        if self.config_file.exists():
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-
         # 根据操作系统设置默认代理路径
         if os.name == 'nt':  # Windows
             default_proxy_path = r"D:\Program Files\Clash Verge\clash-verge.exe"
@@ -69,19 +65,19 @@ class ClaudeLauncher:
             # macOS 常见代理软件路径（Clash Verge 优先）
             default_proxy_path = "/Applications/Clash Verge.app/Contents/MacOS/clash-verge"
 
-        return {
+        return launcher_config.load_config({
             "recent_paths": [],
             "all_paths": [],
             "use_proxy": True,  # 默认开启代理
             "clash_path": default_proxy_path,
             "resume_mode": "cli",  # 历史会话选择模式: "cli"、"web" 或 "diy"
             "pinned_sessions": {}  # DIY模式常驻会话: {项目路径: [{"id":..,"name":..}]}
-        }
-    
+        })
+
     def save_config(self):
         """保存配置文件"""
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, ensure_ascii=False, indent=2)
+        for err in launcher_config.save_config(self.config):
+            print(f"{Fore.YELLOW}⚠️  配置保存失败（磁盘可能已满）: {err}{Style.RESET_ALL}")
     
     def check_and_start_clash(self):
         """检查并启动代理软件（仅在开启代理时，跨平台支持）"""
@@ -1092,11 +1088,11 @@ class ClaudeLauncher:
         self._wait_for_key()
 
     def switch_launcher(self):
-        """切换到 Codex / Grok 启动器。选中后返回 True，取消返回 False。"""
+        """切换到 Codex / Grok Build 启动器。选中后返回 True，取消返回 False。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
         catalog = [
             ("Codex 启动器", "codex_launcher.py"),
-            ("Grok 启动器", "grok_launcher.py"),
+            ("Grok Build 启动器", "grok_launcher.py"),
         ]
         options = []
         files = []

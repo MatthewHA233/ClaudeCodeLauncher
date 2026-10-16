@@ -9,6 +9,7 @@ import time
 import shutil
 from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
+import launcher_config
 
 # 跨平台键盘输入支持
 if os.name == 'nt':  # Windows
@@ -22,7 +23,6 @@ init(autoreset=True)
 
 class GrokLauncher:
     def __init__(self):
-        self.config_file = Path.home() / ".claude_launcher_config.json"  # 与 Claude/Codex 共享配置
         self.config = self.load_config()
         self.proxy_url = "http://127.0.0.1:7890"
         self.animation_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -67,26 +67,22 @@ class GrokLauncher:
 
     def load_config(self):
         """加载配置文件（与 Claude/Codex 启动器共享）"""
-        if self.config_file.exists():
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-
         if os.name == 'nt':
             default_proxy_path = r"D:\Program Files\Clash Verge\clash-verge.exe"
         else:
             default_proxy_path = "/Applications/Clash Verge.app/Contents/MacOS/clash-verge"
 
-        return {
+        return launcher_config.load_config({
             "recent_paths": [],
             "all_paths": [],
             "use_proxy": True,  # 默认开启代理
             "clash_path": default_proxy_path
-        }
+        })
 
     def save_config(self):
         """保存配置文件"""
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, ensure_ascii=False, indent=2)
+        for err in launcher_config.save_config(self.config):
+            print(f"{Fore.YELLOW}⚠️  配置保存失败（磁盘可能已满）: {err}{Style.RESET_ALL}")
 
     def check_and_start_clash(self):
         """检查并启动代理软件（仅在开启代理时，跨平台支持）"""
@@ -797,49 +793,17 @@ class GrokLauncher:
         self.clear_screen()
         print(f"{Fore.CYAN}🚀 启动 Grok Build...{Style.RESET_ALL}")
 
-        commands = []
-        grok_bin = self.grok_bin_dir()
-
-        if os.name == 'nt':
-            drive = path[0] + ":"
-            commands.append(drive)
-            commands.append(f'cd "{path}"')
-            commands.append(f'set PATH={grok_bin};%PATH%')
-            if self.config.get("use_proxy", True):
-                commands.extend([
-                    f'set https_proxy={self.proxy_url}',
-                    f'set http_proxy={self.proxy_url}',
-                    f'set HTTPS_PROXY={self.proxy_url}',
-                    f'set HTTP_PROXY={self.proxy_url}',
-                    f'set ALL_PROXY={self.proxy_url}',
-                ])
-                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
-            else:
-                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
+        env = self.proxy_env()
+        if self.config.get("use_proxy", True):
+            proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
         else:
-            commands.append(f'cd "{path}"')
-            commands.append(f'export PATH="{grok_bin}:$PATH"')
-            if self.config.get("use_proxy", True):
-                commands.extend([
-                    f'export https_proxy={self.proxy_url}',
-                    f'export http_proxy={self.proxy_url}',
-                    f'export HTTPS_PROXY={self.proxy_url}',
-                    f'export HTTP_PROXY={self.proxy_url}',
-                    f'export ALL_PROXY={self.proxy_url}',
-                    f'export all_proxy={self.proxy_url}',
-                ])
-                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}{self.proxy_url}{Style.RESET_ALL}"
-            else:
-                proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
-
-        commands.append(command)
+            proxy_info = f"{Fore.YELLOW}🌐 代理设置: {Fore.WHITE}已关闭{Style.RESET_ALL}"
 
         print(f"\n{Fore.GREEN}📍 工作目录: {Fore.WHITE}{path}{Style.RESET_ALL}")
         print(f"{Fore.BLUE}🔧 执行命令: {Fore.WHITE}{command}{Style.RESET_ALL}")
         print(f"{proxy_info}\n")
 
-        cmd_string = " && ".join(commands)
-        subprocess.run(cmd_string, shell=True)
+        subprocess.run(command, shell=True, cwd=path, env=env)
 
     def format_relative_time(self, iso_str):
         if not iso_str:
@@ -1021,9 +985,9 @@ class GrokLauncher:
             options.append("退出")
 
             if total_pages > 1:
-                title = f"🤖 Grok 启动器 - 第 {self.current_page + 1}/{total_pages} 页"
+                title = f"🤖 Grok Build 启动器 - 第 {self.current_page + 1}/{total_pages} 页"
             else:
-                title = "🤖 Grok 启动器"
+                title = "🤖 Grok Build 启动器"
 
             choice = self.select_from_menu(options, title, is_main_menu=True)
 
@@ -1077,7 +1041,7 @@ class GrokLauncher:
         """首次运行设置引导（跨平台支持，macOS 自动检测代理软件）"""
         self.clear_screen()
         self.print_gradient_text("\n╔" + "═" * 60 + "╗")
-        self.print_gradient_text("║" + "欢迎使用 Grok 启动器".center(54) + "║")
+        self.print_gradient_text("║" + "欢迎使用 Grok Build 启动器".center(54) + "║")
         self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
         print(f"{Fore.YELLOW}🎉 首次运行，让我们先进行一些基础设置！{Style.RESET_ALL}\n")
@@ -1168,7 +1132,7 @@ class GrokLauncher:
         """运行启动器"""
         try:
             if os.name == 'nt':
-                os.system("title Grok Launcher")
+                os.system("title Grok Build Launcher")
 
             clash_path = self.config.get("clash_path")
             if not clash_path or not os.path.exists(clash_path):
@@ -1185,7 +1149,7 @@ class GrokLauncher:
             self.main_menu()
 
             self.clear_screen()
-            print(f"\n{Fore.CYAN}👋 感谢使用 Grok 启动器！{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}👋 感谢使用 Grok Build 启动器！{Style.RESET_ALL}")
             print(f"{Fore.GREEN}   祝您编码愉快！✨{Style.RESET_ALL}")
         except KeyboardInterrupt:
             self.clear_screen()

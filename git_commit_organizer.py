@@ -1,6 +1,6 @@
 """
 Git提交整理模块 - 为AI沟通提供学习语境材料
-支持Claude Code、Codex 和 Grok 启动器共享使用
+支持Claude Code、Codex 和 Grok Build 启动器共享使用
 """
 
 import os
