@@ -9,7 +9,8 @@
   按 (message.id:requestId) **全局跨文件去重**；model 取 message.model 并 split('@')[0]；
   day 取 timestamp 前 10 字符(或 rfc3339→UTC date)。
 - Codex: turn_context 记 current_model；event_msg+payload.type==token_count 取 info.last_token_usage；
-  cache_read = max(cached_input_tokens, cache_read_input_tokens) 再 min(input)。
+  子智能体只统计 inter_agent_communication_metadata(trigger_turn=true) 后的新事件；
+  input_tokens 含缓存命中，输出前拆成互斥的 input/cache_read/cache_creation 桶。
 - 文件: 扫 mtime >= (since - 1day) 的 .jsonl，按 mtime 倒序取前 2000；Codex 去重文件名。
 """
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
 
 MAX_FILES_PER_PROVIDER = 2000
+TOKEN_SCHEMA_VERSION = 2
 
 
 def _claude_roots():
@@ -155,21 +157,43 @@ def _scan_claude_file(fp, since, until, seen, days):
 
 def _scan_codex_file(fp, since, until, days):
     current_model = None
+    all_days = {}
+    post_fork_days = {}
+    is_subagent = False
+    saw_trigger_turn = False
     try:
         with open(fp, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
-                if '"token_count"' not in line and '"turn_context"' not in line:
+                if (
+                    '"token_count"' not in line
+                    and '"turn_context"' not in line
+                    and '"session_meta"' not in line
+                    and '"inter_agent_communication_metadata"' not in line
+                ):
                     continue
                 try:
                     v = json.loads(line)
                 except Exception:
                     continue
                 t = v.get("type")
-                if t == "turn_context":
+                if t == "session_meta":
+                    pl = v.get("payload") or {}
+                    source = pl.get("source") or {}
+                    if pl.get("thread_source") == "subagent" or (
+                        isinstance(source, dict) and "subagent" in source
+                    ):
+                        is_subagent = True
+                elif t == "turn_context":
                     pl = v.get("payload") or {}
                     m = pl.get("model") or (pl.get("info") or {}).get("model")
                     if m:
                         current_model = m
+                elif t == "inter_agent_communication_metadata":
+                    pl = v.get("payload") or {}
+                    if pl.get("trigger_turn") is True:
+                        saw_trigger_turn = True
+                        # 嵌套子智能体会继承上一级边界；最终只保留最后一个边界之后的新增用量。
+                        post_fork_days.clear()
                 elif t == "event_msg":
                     pl = v.get("payload")
                     if not isinstance(pl, dict) or pl.get("type") != "token_count":
@@ -191,15 +215,32 @@ def _scan_codex_file(fp, since, until, days):
                     )
                     inp = _i(last, "input_tokens")
                     cr = max(_i(last, "cached_input_tokens"), _i(last, "cache_read_input_tokens"))
-                    cc = _i(last, "cache_creation_input_tokens")
+                    cc = max(
+                        _i(last, "cache_creation_input_tokens"),
+                        _i(last, "cache_write_input_tokens"),
+                    )
                     out = _i(last, "output_tokens")
                     cr = min(cr, inp)
-                    tot = {"input": inp, "cache_read": cr, "cache_create": cc, "output": out}
-                    if inp + cr + cc + out == 0:
+                    cc = min(cc, max(0, inp - cr))
+                    tot = {
+                        "input": max(0, inp - cr - cc),
+                        "cache_read": cr,
+                        "cache_create": cc,
+                        "output": out,
+                    }
+                    if inp + out == 0:
                         continue
-                    _add(days, str(day), _norm_model(model, "codex"), tot)
+                    model = _norm_model(model, "codex")
+                    _add(all_days, str(day), model, tot)
+                    if saw_trigger_turn:
+                        _add(post_fork_days, str(day), model, tot)
     except OSError:
         pass
+
+    selected = post_fork_days if is_subagent and saw_trigger_turn else all_days
+    for day, models in selected.items():
+        for model, totals in models.items():
+            _add(days, day, model, totals)
 
 
 def compute(since_days=400):
@@ -242,7 +283,7 @@ def compute(since_days=400):
                     "cache_creation_tokens": tot["cache_create"],
                     "output_tokens": tot["output"],
                 })
-    return {"ok": True, "days": rows}
+    return {"ok": True, "schema_version": TOKEN_SCHEMA_VERSION, "days": rows}
 
 
 if __name__ == "__main__":
