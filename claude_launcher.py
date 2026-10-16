@@ -13,6 +13,7 @@ from git_commit_organizer import GitCommitOrganizer
 from conversation_viewer import ConversationViewer
 import folder_picker
 import launcher_config
+import term_input
 
 # 跨平台键盘输入支持
 if os.name == 'nt':  # Windows
@@ -106,7 +107,7 @@ class ClaudeLauncher:
     
     def clear_screen(self):
         """清屏"""
-        os.system('cls' if os.name == 'nt' else 'clear')
+        term_input.clear_screen()
     
     def animated_print(self, text, color=Fore.WHITE, delay=0.01):
         """动画打印文本"""
@@ -153,19 +154,20 @@ class ClaudeLauncher:
         
         self.animated_print("\n         Code with Claude, Build with Speed ⚡", Fore.CYAN, 0.01)
     
-    def print_menu(self, options, selected_index, title=""):
-        """打印菜单"""
+    def print_menu(self, options, selected_index, title="", mark=lambda: None):
+        """打印菜单；mark 用于记录每个选项的起始位置（供鼠标点击定位）"""
         self.clear_screen()
-        
+
         # 打印标题
         if title:
             self.print_gradient_text("\n╔" + "═" * 60 + "╗")
             centered_title = "║" + self.center_text(title, 60) + "║"
             self.print_gradient_text(centered_title)
             self.print_gradient_text("╚" + "═" * 60 + "╝\n")
-        
+
         # 打印选项
         for i, option in enumerate(options):
+            mark()
             if i == selected_index:
                 # 选中项带动画箭头
                 arrow = self.animation_frames[self.frame_index % len(self.animation_frames)]
@@ -281,13 +283,14 @@ class ClaudeLauncher:
                         print(f"     {Fore.WHITE}{Style.DIM}{meta}{Style.RESET_ALL}")
                 else:
                     print(f"  {icon} {color}{option}{Style.RESET_ALL}")
-        
+        mark()
+
         # 底部提示
-        print(f"\n{Fore.CYAN}╭────────────────────────────────────────────────────────────╮{Style.RESET_ALL}")
         tip_content = "↑↓选 Enter确认 C创建 I安装 U更新 T定时 S设置 W服务 Q切换 ←→页"
-        aligned_tip = self.center_text(tip_content, 60)
-        print(f"{Fore.CYAN}│{Fore.WHITE}{aligned_tip}{Fore.CYAN}│{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}╰────────────────────────────────────────────────────────────╯{Style.RESET_ALL}")
+        inner = max(60, self.get_display_width(tip_content) + 2)  # 提示文字比 60 列宽时撑开边框
+        print(f"\n{Fore.CYAN}╭{'─' * inner}╮{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}│{Fore.WHITE}{self.center_text(tip_content, inner)}{Fore.CYAN}│{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}╰{'─' * inner}╯{Style.RESET_ALL}")
     
     def _wait_for_key(self):
         """等待用户按任意键（跨平台支持）"""
@@ -302,94 +305,52 @@ class ClaudeLauncher:
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
+    LETTER_KEYS = {
+        'c': 'CREATE', 'i': 'INSTALL', 'u': 'UPDATE', 's': 'SETTINGS',
+        'q': 'SWITCH', 'w': 'SERVER', 't': 'TIMED', 'p': 'PIN',
+    }
+
+    FOOTER_HOTKEYS = [
+        ('↑', 'UP'), ('↓', 'DOWN'), ('Enter确认', 'ENTER'), ('C创建', 'CREATE'),
+        ('I安装', 'INSTALL'), ('U更新', 'UPDATE'), ('T定时', 'TIMED'), ('S设置', 'SETTINGS'),
+        ('W服务', 'SERVER'), ('Q切换', 'SWITCH'), ('←', 'LEFT'), ('→', 'RIGHT'),
+    ]
+
     def get_key(self):
-        """获取按键输入（跨平台支持）"""
-        if os.name == 'nt':  # Windows
-            key = msvcrt.getch()
-            if key == b'\xe0':  # 特殊键前缀
-                key = msvcrt.getch()
-                if key == b'H':  # 上箭头
-                    return 'UP'
-                elif key == b'P':  # 下箭头
-                    return 'DOWN'
-                elif key == b'K':  # 左箭头
-                    return 'LEFT'
-                elif key == b'M':  # 右箭头
-                    return 'RIGHT'
-            elif key == b'\r':  # Enter
-                return 'ENTER'
-            elif key == b'\x1b':  # ESC
-                return 'ESC'
-            elif key == b'c' or key == b'C':
-                return 'CREATE'
-            elif key == b'i' or key == b'I':
-                return 'INSTALL'
-            elif key == b'u' or key == b'U':
-                return 'UPDATE'
-            elif key == b's' or key == b'S':
-                return 'SETTINGS'
-            elif key == b'q' or key == b'Q':
-                return 'SWITCH'
-            elif key == b'w' or key == b'W':
-                return 'SERVER'
-            elif key == b't' or key == b'T':
-                return 'TIMED'
-            elif key == b'p' or key == b'P':
-                return 'PIN'
-        else:  # Unix/Linux/macOS
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                ch = sys.stdin.read(1)
+        """获取按键输入（跨平台支持）；在鼠标模式下也可能返回 term_input.MouseEvent"""
+        key = term_input.read_input()
+        if isinstance(key, str) and len(key) == 1:
+            return self.LETTER_KEYS.get(key.lower())
+        return key
 
-                # 处理ESC序列（方向键等）
-                if ch == '\x1b':
-                    # 读取下一个字符
-                    ch2 = sys.stdin.read(1)
-                    if ch2 == '[':
-                        ch3 = sys.stdin.read(1)
-                        if ch3 == 'A':  # 上箭头
-                            return 'UP'
-                        elif ch3 == 'B':  # 下箭头
-                            return 'DOWN'
-                        elif ch3 == 'D':  # 左箭头
-                            return 'LEFT'
-                        elif ch3 == 'C':  # 右箭头
-                            return 'RIGHT'
-                    else:
-                        return 'ESC'
-                elif ch == '\r' or ch == '\n':  # Enter
-                    return 'ENTER'
-                elif ch.lower() == 'c':
-                    return 'CREATE'
-                elif ch.lower() == 'i':
-                    return 'INSTALL'
-                elif ch.lower() == 'u':
-                    return 'UPDATE'
-                elif ch.lower() == 's':
-                    return 'SETTINGS'
-                elif ch.lower() == 'q':
-                    return 'SWITCH'
-                elif ch.lower() == 'w':
-                    return 'SERVER'
-                elif ch.lower() == 't':
-                    return 'TIMED'
-                elif ch.lower() == 'p':
-                    return 'PIN'
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-        return None
-    
     def select_from_menu(self, options, title="", is_main_menu=False):
-        """从菜单中选择"""
+        """从菜单中选择（鼠标：单击选中，再点一次确认；滚轮上下移动）"""
+        with term_input.mouse_mode():
+            return self._select_from_menu(options, title, is_main_menu)
+
+    def _select_from_menu(self, options, title, is_main_menu):
         selected_index = 0
-        
+        layout = None  # None 表示需要重画
+
         while True:
-            self.print_menu(options, selected_index, title)
+            if layout is None:
+                layout = term_input.capture_menu(
+                    lambda mark: self.print_menu(options, selected_index, title, mark),
+                    self.FOOTER_HOTKEYS)
             key = self.get_key()
-            
+
+            if isinstance(key, term_input.MouseEvent):
+                action = term_input.menu_action(key, layout, selected_index, is_main_menu)
+                if action is None:
+                    continue
+                if action[0] == 'select':
+                    selected_index, layout = action[1], None
+                    continue
+                key = action[1]
+            if key is None:
+                continue
+            layout = None
+
             if key == 'UP':
                 selected_index = (selected_index - 1) % len(options)
             elif key == 'DOWN':
