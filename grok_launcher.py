@@ -9,6 +9,7 @@ import time
 import shutil
 from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
+import folder_picker
 import launcher_config
 
 # 跨平台键盘输入支持
@@ -373,6 +374,7 @@ class GrokLauncher:
             self.print_gradient_text("╚" + "═" * 60 + "╝\n")
 
             options = [
+                "手动选取路径",
                 "手动输入完整路径",
                 "从旧项目获取根目录创建新会话",
                 "返回主菜单"
@@ -380,14 +382,40 @@ class GrokLauncher:
 
             choice = self.select_from_menu(options, "🎯 选择创建方式")
 
-            if choice == -1 or choice == 2:
+            if choice == -1 or choice == 3:
                 break
             elif choice == 0:
-                self.manual_add_path()
+                self.pick_folder_path()
                 break
             elif choice == 1:
+                self.manual_add_path()
+                break
+            elif choice == 2:
                 self.create_from_parent_directory()
                 break
+
+    def pick_folder_path(self):
+        """通过系统文件夹选择框添加路径"""
+        self.clear_screen()
+        self.print_gradient_text("\n╔" + "═" * 60 + "╗")
+        centered_text = "║" + self.center_text("手动选取路径", 57) + "║"
+        self.print_gradient_text(centered_text)
+        self.print_gradient_text("╚" + "═" * 60 + "╝\n")
+
+        recent = self.config["recent_paths"]
+        initial_dir = os.path.dirname(recent[0]) if recent else None
+        print(f"{Fore.CYAN}📂 已打开系统文件夹选择框，请在弹出的窗口中选择项目文件夹...{Style.RESET_ALL}")
+        try:
+            new_path = folder_picker.pick_folder("选择项目文件夹", initial_dir)
+        except Exception as e:
+            self.animated_print(f"\n❌ 无法打开文件夹选择框: {e}", Fore.RED)
+            print(f"{Fore.WHITE}💡 可改用「手动输入完整路径」{Style.RESET_ALL}")
+            print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
+            self._wait_for_key()
+            return
+
+        if new_path:
+            self.add_path_and_report(new_path)
 
     def manual_add_path(self):
         """手动添加路径"""
@@ -409,6 +437,10 @@ class GrokLauncher:
         if not new_path:
             return
 
+        self.add_path_and_report(new_path)
+
+    def add_path_and_report(self, new_path):
+        """校验并登记路径，显示结果后等待按键"""
         print(f"{Fore.CYAN}⚡ 验证路径...{Style.RESET_ALL}")
 
         if os.path.exists(new_path):
