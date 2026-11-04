@@ -11,6 +11,7 @@ from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
 import folder_picker
 import launcher_config
+import project_actions
 import term_input
 
 # 跨平台键盘输入支持
@@ -806,6 +807,7 @@ class CodexLauncher:
                 "开始新会话 (codex)",
                 "选择历史会话 (codex resume)",
                 "整理git提交作为学习材料",
+                "复制项目路径并打开文件夹",
                 "返回主菜单"
             ]
 
@@ -815,7 +817,7 @@ class CodexLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 4:  # ESC或返回主菜单
+            if choice == -1 or choice == 5:  # ESC或返回主菜单
                 break
             elif choice == 0:
                 self.execute_codex_command(path, "codex resume --last")
@@ -825,6 +827,8 @@ class CodexLauncher:
                 self.execute_codex_command(path, "codex resume")
             elif choice == 3:
                 self.git_organizer.run_commit_organizer(path)
+            elif choice == 4:
+                project_actions.copy_path_and_open(path, self._wait_for_key)
 
 
     def get_all_paths(self):

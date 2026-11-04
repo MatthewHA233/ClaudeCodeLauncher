@@ -11,6 +11,7 @@ from colorama import init, Fore, Back, Style
 from git_commit_organizer import GitCommitOrganizer
 import folder_picker
 import launcher_config
+import project_actions
 import term_input
 
 # 跨平台键盘输入支持
@@ -919,6 +920,7 @@ class GrokLauncher:
                 "开始新会话 (grok)",
                 "选择历史会话",
                 "整理git提交作为学习材料",
+                "复制项目路径并打开文件夹",
                 "删除此项目记录",
                 "返回主菜单"
             ]
@@ -927,7 +929,7 @@ class GrokLauncher:
             title = f"📂 {project_name}"
             choice = self.select_from_menu(options, title)
 
-            if choice == -1 or choice == 5:
+            if choice == -1 or choice == 6:
                 break
             elif choice == 0:
                 self.execute_grok_command(path, f'{grok} --resume')
@@ -938,6 +940,8 @@ class GrokLauncher:
             elif choice == 3:
                 self.git_organizer.run_commit_organizer(path)
             elif choice == 4:
+                project_actions.copy_path_and_open(path, self._wait_for_key)
+            elif choice == 5:
                 if self.delete_project_record(path):
                     break
 

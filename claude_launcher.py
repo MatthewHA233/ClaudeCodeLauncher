@@ -13,6 +13,7 @@ from git_commit_organizer import GitCommitOrganizer
 from conversation_viewer import ConversationViewer
 import folder_picker
 import launcher_config
+import project_actions
 import term_input
 
 # 跨平台键盘输入支持
@@ -1284,6 +1285,7 @@ class ClaudeLauncher:
                 "开始新会话 (claude)",
                 f"选择历史会话 ({resume_mode_text})",
                 "整理git提交作为学习材料",
+                "复制项目路径并打开文件夹",
                 "删除此项目记录",
                 "返回主菜单"
             ])
@@ -1294,7 +1296,7 @@ class ClaudeLauncher:
 
             choice = self.select_from_menu(options, title)
 
-            back_index = pinned_count + 5
+            back_index = pinned_count + 6
             if choice == -1 or choice == back_index:  # ESC或返回主菜单
                 break
             elif choice == 0:
@@ -1315,6 +1317,8 @@ class ClaudeLauncher:
             elif choice == pinned_count + 3:
                 self.git_organizer.run_commit_organizer(path)
             elif choice == pinned_count + 4:
+                project_actions.copy_path_and_open(path, self._wait_for_key)
+            elif choice == pinned_count + 5:
                 # 删除项目记录
                 if self.delete_project_record(path):
                     break  # 删除成功后返回主菜单
