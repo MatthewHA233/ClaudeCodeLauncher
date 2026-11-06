@@ -5,12 +5,14 @@
 Windows：用 WriteConsoleInputW 直接写控制台输入缓冲（CONIN$），claude 的 TUI
 从中读到字符。不依赖窗口前台焦点（区别于 SendInput），即便用户切走窗口也只写进
 这个控制台、不会误打到别处，更稳。
-非 Windows：暂为 no-op（启动器主要在 Windows 用）。
+macOS：用 TIOCSTI 把字节塞进控制终端（/dev/tty）的输入队列，同样不依赖窗口焦点。
+其它平台：不支持（can_type() 返回 False）。
 
 约定：只填不发——不注入回车（\\r），尾部换行也清掉，避免误触发送。
 失败一律静默，绝不影响启动器主流程。
 """
 import os
+import sys
 import time
 
 
@@ -97,6 +99,38 @@ def _type_windows(text, per_char_delay=0.012, initial_delay=2.0):
             time.sleep(per_char_delay)
 
 
+def _type_macos(text, per_char_delay=0.012, initial_delay=2.0):
+    import fcntl
+    import termios
+
+    with open("/dev/tty", "rb", buffering=0) as tty:
+        # 等 claude 的 TUI 起来（代理设置 + node 启动需要时间）
+        time.sleep(initial_delay)
+
+        # 去掉尾部换行 + 丢弃所有 \r，避免误触发送
+        text = text.rstrip("\r\n").replace("\r", "")
+
+        for ch in text:
+            # 同一字符的 UTF-8 字节连续写入，延时只加在字符之间
+            for byte in ch.encode("utf-8", "replace"):
+                fcntl.ioctl(tty.fileno(), termios.TIOCSTI, bytes([byte]))
+            if per_char_delay:
+                time.sleep(per_char_delay)
+
+
+def can_type():
+    """当前环境能否注入。不能时调用方不要取走队列，否则草稿会丢。"""
+    if os.name == "nt":
+        return True
+    if sys.platform != "darwin":
+        return False
+    try:
+        with open("/dev/tty", "rb", buffering=0):
+            return True
+    except OSError:  # 没有控制终端
+        return False
+
+
 def type_text(text, **kwargs):
     """逐字符打字（不回车）。失败静默。"""
     if not text:
@@ -104,5 +138,7 @@ def type_text(text, **kwargs):
     try:
         if os.name == "nt":
             _type_windows(text, **kwargs)
+        elif sys.platform == "darwin":
+            _type_macos(text, **kwargs)
     except Exception:
         pass

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 LABEL = "com.matthew.claude-session-relay"
 DEFAULT_PORT = 47800
@@ -32,7 +32,8 @@ def _is_port_open(port):
 def _shutdown_old(port):
     try:
         req = Request(f"http://127.0.0.1:{port}/api/shutdown", data=b"{}", method="POST")
-        urlopen(req, timeout=2).read()
+        # 终端常设 http_proxy，urllib 不会自动绕过回环地址，走代理只会拿到 502，旧 relay 关不掉
+        build_opener(ProxyHandler({})).open(req, timeout=2).read()
     except Exception:
         return
     for _ in range(30):

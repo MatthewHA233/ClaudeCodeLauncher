@@ -6,6 +6,8 @@ Git提交整理模块 - 为AI沟通提供学习语境材料
 import os
 import json
 import subprocess
+import tempfile
+import threading
 import pyperclip
 import time
 from datetime import datetime
@@ -334,6 +336,7 @@ Git Diff详情：
 
     def call_ai_agent(self, path, prompt, commit_info, commit_details, agent_type="claude"):
         """调用AI代理生成语境材料"""
+        prompt_file = None
         try:
             self.launcher.clear_screen()
             print(f"{Fore.CYAN}🤖 正在调用 {agent_type} 生成学习语境材料...{Style.RESET_ALL}")
@@ -355,11 +358,19 @@ Git Diff详情：
                 print(f"{Fore.YELLOW}🌐 代理已关闭{Style.RESET_ALL}")
 
             # 直接执行AI命令，添加项目目录访问权限
+            stdin_text = prompt
             if agent_type == "claude":
-                cmd = ["claude.cmd", "--add-dir", ".", "--verbose", "-p"]
+                cmd = ["claude.cmd" if os.name == "nt" else "claude", "--add-dir", ".", "--verbose", "-p"]
             elif agent_type == "grok":
                 grok_bin = str(Path.home() / ".grok" / "bin" / ("grok.exe" if os.name == "nt" else "grok"))
-                cmd = [grok_bin if os.path.exists(grok_bin) else "grok", "-p"]
+                # grok 的 -p 必须带参数、不读 stdin；提示词含 diff 可能很长，用文件传
+                fd, prompt_file = tempfile.mkstemp(prefix="grok_prompt_", suffix=".txt")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(prompt)
+                stdin_text = ""
+                cmd = [grok_bin if os.path.exists(grok_bin) else "grok", "--prompt-file", prompt_file]
+            elif agent_type == "codex":
+                cmd = ["codex", "exec", "-"]  # 裸 codex 是 TUI，stdin 不是终端会直接报错
             else:
                 cmd = [agent_type]
 
@@ -381,8 +392,13 @@ Git Diff详情：
                 bufsize=1,  # 行缓冲
                 universal_newlines=True
             )
+            # codex exec 把进度写到 stderr，不边读边排空的话，管道写满后子进程会卡死
+            stderr_chunks = []
+            stderr_reader = threading.Thread(target=lambda: stderr_chunks.append(process.stderr.read()), daemon=True)
+            stderr_reader.start()
+
             # 发送prompt
-            process.stdin.write(prompt)
+            process.stdin.write(stdin_text)
             process.stdin.close()
 
             # 实时读取输出
@@ -396,7 +412,8 @@ Git Diff详情：
                     break
 
             # 读取剩余的stderr
-            stderr_output = process.stderr.read()
+            stderr_reader.join()
+            stderr_output = "".join(stderr_chunks)
 
             print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
 
@@ -444,6 +461,9 @@ Git Diff详情：
         except Exception as e:
             print(f"{Fore.RED}❌ AI调用出错: {e}{Style.RESET_ALL}")
             return None
+        finally:
+            if prompt_file:
+                os.unlink(prompt_file)
 
     def show_loading_animation(self, text, duration=2):
         """显示加载动画"""

@@ -136,17 +136,19 @@ else:
             if timeout is not None and not select.select([fd], [], [], timeout)[0]:
                 return None
             data = os.read(fd, 1)
-            if not data:
-                return None
+            if not data:  # 返回 None 会让菜单循环空转
+                raise EOFError("标准输入已关闭")
             ch = _decoder.decode(data)
             if ch:
                 return ch
 
     def _cbreak_attrs(fd):
         attrs = termios.tcgetattr(fd)
-        attrs[3] &= ~(termios.ICANON | termios.ECHO)
+        # 只保留 Ctrl+C：Ctrl+Z 挂起后 shell 会留在鼠标上报模式，点击全变成乱码
+        attrs[3] &= ~(termios.ICANON | termios.ECHO | termios.IEXTEN)
         attrs[6][termios.VMIN] = 1
         attrs[6][termios.VTIME] = 0
+        attrs[6][termios.VSUSP] = os.fpathconf(fd, "PC_VDISABLE")
         return attrs
 
     @contextlib.contextmanager
@@ -236,7 +238,7 @@ def _read_token():
         return ch
     if len(ch) > 1:  # Windows 虚拟键（方向键）
         return ch
-    if ch in ("\x00", "\xe0"):  # 旧式控制台方向键前缀
+    if os.name == "nt" and ch in ("\x00", "\xe0"):  # 旧式控制台方向键前缀
         return _WIN_ARROWS.get(_next_char(None) or "")
     if ch == "\x1b":
         return _read_escape()

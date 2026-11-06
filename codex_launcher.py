@@ -17,9 +17,6 @@ import term_input
 # 跨平台键盘输入支持
 if os.name == 'nt':  # Windows
     import msvcrt
-else:  # Unix/Linux/macOS
-    import termios
-    import tty
 
 init(autoreset=True)
 
@@ -262,13 +259,7 @@ class CodexLauncher:
         if os.name == 'nt':  # Windows
             msvcrt.getch()
         else:  # Unix/Linux/macOS
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                sys.stdin.read(1)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            term_input.read_input()  # 不用 sys.stdin：它的缓冲会藏住方向键序列的后半截
 
     LETTER_KEYS = {'c': 'CREATE', 'i': 'INSTALL', 's': 'SETTINGS', 'q': 'SWITCH'}
 
@@ -1057,10 +1048,12 @@ class CodexLauncher:
         except KeyboardInterrupt:
             self.clear_screen()
             print(f"\n{Fore.YELLOW}⚠️  程序已中断{Style.RESET_ALL}")
+        except EOFError:  # 非终端环境拉起，没人能操作菜单
+            print(f"\n{Fore.YELLOW}⚠️  标准输入已关闭，程序退出{Style.RESET_ALL}")
         except Exception as e:
             print(f"\n{Fore.RED}❌ 发生错误: {e}{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键退出...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self._wait_for_key()
 
 if __name__ == "__main__":
     launcher = CodexLauncher()

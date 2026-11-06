@@ -62,7 +62,9 @@ Claude Usage Monitor 的「预备发言/待办」挂靠到某个会话。用户�
 
 - **`launcher_queue.py`**：队列读写。`push(session_id, text, draft_id)` 入队（去重）；`pop(session_id)` 取走队首并消费。
 - **`console_typer.py`**：把文字**逐字符**写进当前控制台输入缓冲。Windows 用 `WriteConsoleInputW`
-  （按 UTF-16 码元发送，正确处理中文；**不依赖窗口前台焦点**）。**只填不发**——剥掉 `\r`/尾换行，不注入回车。
+  （按 UTF-16 码元发送，正确处理中文；**不依赖窗口前台焦点**）；macOS 用 `TIOCSTI` 写控制终端 `/dev/tty`
+  （按 UTF-8 字节发送，同样不依赖焦点）。**只填不发**——剥掉 `\r`/尾换行，不注入回车。
+  `can_type()` 为 False（其它平台 / 没有控制终端）时不起 watcher，草稿留在队列里不丢。
 - **`claude_launcher.py` 的 `execute_claude_command`**：四种进入对话的触发器全汇于此。先用
   `_resolve_session_id(command, path)` 解析目标会话（`--resume <id>` 直接取；`-c` 反查最近会话；
   新建 `claude` / 无 id 的 `--resume` 选择器拿不到 → 跳过），再 `_start_draft_watcher` 起一个
@@ -70,7 +72,7 @@ Claude Usage Monitor 的「预备发言/待办」挂靠到某个会话。用户�
   会话退出时主线程 `stop_evt.set()` 停。既覆盖「进入前已排队」也覆盖「**常驻对话期间随时推送**」。
 
 **为什么能在 claude 运行时打字**：`subprocess.run(..., shell=True)` 阻塞的是**主线程**，而本启动器进程与
-claude **共用同一个控制台**，所以后台线程仍能 `WriteConsoleInput` 写进 claude 正在读的输入缓冲。
+claude **共用同一个控制台**，所以后台线程仍能 `WriteConsoleInput`（macOS 是 `TIOCSTI`）写进 claude 正在读的输入缓冲。
 **因此只有经更新后的启动器进入/恢复的会话才带 watcher**；更新前拉起的旧会话需重新 `ccrun` 进入一次才生效。
 
 ## 改这块时的注意
@@ -83,3 +85,4 @@ claude **共用同一个控制台**，所以后台线程仍能 `WriteConsoleInpu
 - `console_typer` **只填不发**：绝不注入回车（`\r`），由用户检查后自行发送。改动注入逻辑勿破坏这条。
 - 实时注入依赖「启动器与 claude 共用同一控制台」+「后台线程」。若哪天把 `subprocess.run` 改成新开窗口/新控制台
   （如 `CREATE_NEW_CONSOLE`、`wt.exe` 起新窗口），`WriteConsoleInputW` 会失效，需改用 `AttachConsole(目标pid)` 或 `SendInput`。
+  macOS 同理：`TIOCSTI` 只能写调用进程自己的控制终端，claude 换了终端就打不进去。

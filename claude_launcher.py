@@ -298,13 +298,7 @@ class ClaudeLauncher:
         if os.name == 'nt':  # Windows
             msvcrt.getch()
         else:  # Unix/Linux/macOS
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                sys.stdin.read(1)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            term_input.read_input()  # 不用 sys.stdin：它的缓冲会藏住方向键序列的后半截
 
     LETTER_KEYS = {
         'c': 'CREATE', 'i': 'INSTALL', 'u': 'UPDATE', 's': 'SETTINGS',
@@ -561,7 +555,7 @@ class ClaudeLauncher:
             self.clear_screen()
             print(f"{Fore.YELLOW}⚠️  没有找到已存储的会话父目录{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-            msvcrt.getch()
+            self._wait_for_key()
             return
         
         # 构建选项列表
@@ -617,7 +611,7 @@ class ClaudeLauncher:
                 except Exception as e:
                     print(f"\n{Fore.RED}❌ 创建目录失败: {e}{Style.RESET_ALL}")
                     print(f"\n{Fore.CYAN}按任意键继续...{Style.RESET_ALL}")
-                    msvcrt.getch()
+                    self._wait_for_key()
                     return
             
             # 保存路径到配置
@@ -780,12 +774,10 @@ class ClaudeLauncher:
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
             try:
-                tty.setcbreak(fd)
-                rlist, _, _ = select.select([sys.stdin], [], [], 0)
+                tty.setcbreak(fd, termios.TCSANOW)  # 默认的 TCSAFLUSH 会清掉两次轮询之间按下的键
+                rlist, _, _ = select.select([fd], [], [], 0)
                 if rlist:
-                    ch = sys.stdin.read(1)
-                    if ch == '\x1b':
-                        return True
+                    return term_input.read_input() == 'ESC'  # 方向键序列开头也是 \x1b，要整段解析
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             return False
@@ -1168,7 +1160,7 @@ class ClaudeLauncher:
 
         # 预备发言实时注入：会话运行期间，后台线程轮询队列，有 Claude Usage Monitor 推来的
         # 草稿就逐字符打入「当前正在跑的对话」输入框（不回车）。本进程与 claude 共用控制台，
-        # 故 subprocess.run 阻塞主线程时，这个后台线程仍能 WriteConsoleInput。
+        # 故 subprocess.run 阻塞主线程时，这个后台线程仍能写入（Windows 用 WriteConsoleInput，macOS 用 TIOCSTI）。
         stop_evt = None
         try:
             stop_evt = self._start_draft_watcher(command, path)
@@ -1204,8 +1196,8 @@ class ClaudeLauncher:
     def _start_draft_watcher(self, command, path):
         """会话运行期间轮询队列，把 Claude Usage Monitor 推来的预备发言逐字符打入「当前对话」输入框。
 
-        关键：本启动器进程与 claude 共用同一个控制台，故后台线程能在 claude 运行时用
-        WriteConsoleInputW 写进它的输入缓冲（subprocess.run 阻塞的是主线程，不挡此线程）。
+        关键：本启动器进程与 claude 共用同一个控制台，故后台线程能在 claude 运行时写进它的输入缓冲
+        （console_typer：Windows 用 WriteConsoleInputW，macOS 用 TIOCSTI；subprocess.run 阻塞的是主线程，不挡此线程）。
         既覆盖「进入前已排队」也覆盖「常驻期间随时推送」。返回 threading.Event，
         会话退出后由调用方 set() 停止轮询。"""
         import threading
@@ -1213,6 +1205,8 @@ class ClaudeLauncher:
             import launcher_queue
             import console_typer
         except Exception:
+            return None
+        if not console_typer.can_type():  # 打不进去就别取走队列，否则草稿会丢
             return None
         session_id = self._resolve_session_id(command, path)
         if not session_id:
@@ -1721,6 +1715,8 @@ class ClaudeLauncher:
         except KeyboardInterrupt:
             self.clear_screen()
             print(f"\n{Fore.YELLOW}⚠️  程序已中断{Style.RESET_ALL}")
+        except EOFError:  # 非终端环境拉起，没人能操作菜单
+            print(f"\n{Fore.YELLOW}⚠️  标准输入已关闭，程序退出{Style.RESET_ALL}")
         except Exception as e:
             print(f"\n{Fore.RED}❌ 发生错误: {e}{Style.RESET_ALL}")
             print(f"\n{Fore.CYAN}按任意键退出...{Style.RESET_ALL}")

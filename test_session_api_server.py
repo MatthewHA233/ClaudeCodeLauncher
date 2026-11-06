@@ -8,9 +8,12 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import ProxyHandler, build_opener
 
 import session_api_server as relay
+
+# 终端常设 http_proxy，urllib 不会自动绕过回环地址
+urlopen_direct = build_opener(ProxyHandler({})).open
 
 
 class RawProviderTests(unittest.TestCase):
@@ -136,14 +139,14 @@ class RawProviderTests(unittest.TestCase):
         try:
             base = f"http://127.0.0.1:{server.server_address[1]}/raw/image?"
             common = {"provider": "codex", "key": self.codex_key}
-            with urlopen(
+            with urlopen_direct(
                 base + urlencode({**common, "path": str(self.event_image)}),
                 timeout=3,
             ) as response:
                 self.assertEqual(response.read(), b"test-image-bytes")
                 self.assertEqual(response.headers.get_content_type(), "image/png")
             with self.assertRaises(HTTPError) as blocked:
-                urlopen(
+                urlopen_direct(
                     base + urlencode({**common, "path": str(self.unreferenced_image)}),
                     timeout=3,
                 )
