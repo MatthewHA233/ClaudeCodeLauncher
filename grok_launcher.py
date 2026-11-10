@@ -669,11 +669,12 @@ class GrokLauncher:
         self._wait_for_key()
 
     def switch_launcher(self):
-        """切换到 Claude / Codex 启动器。选中后返回 True，取消返回 False。"""
+        """切换到 Claude / Codex / OpenCode 启动器。选中后返回 True，取消返回 False。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
         catalog = [
             ("Claude Code 启动器", "claude_launcher.py"),
             ("Codex 启动器", "codex_launcher.py"),
+            ("OpenCode 启动器", "opencode_launcher.py"),
         ]
         options = []
         files = []

@@ -1,0 +1,4 @@
+#!/bin/bash
+# macOS 全局命令：一键启动 OpenCode Launcher
+cd "$(dirname "$0")"
+python3 opencode_launcher.py

@@ -12,6 +12,7 @@ import pyperclip
 import claude_launcher
 import codex_launcher
 import grok_launcher
+import opencode_launcher
 import project_actions
 
 COPY_OPTION = "复制项目路径并打开文件夹"
@@ -96,17 +97,23 @@ def make_launcher(launcher_class):
     launcher.execute_grok_command = mock.Mock()
     launcher.grok_executable = mock.Mock(return_value="grok")
     launcher.get_grok_sessions = mock.Mock(return_value=[])
+    launcher.execute_opencode_command = mock.Mock()
+    launcher.get_opencode_sessions = mock.Mock(return_value=[])
     launcher.delete_project_record = mock.Mock(return_value=True)
     launcher._wait_for_key = mock.Mock()
     return launcher
 
 
 class ProjectMenuTest(unittest.TestCase):
-    LAUNCHERS = (
+    GIT_LAUNCHERS = (
         (claude_launcher.ClaudeLauncher, DELETE_OPTION),
         (grok_launcher.GrokLauncher, DELETE_OPTION),
         (codex_launcher.CodexLauncher, BACK_OPTION),  # Codex 没有删除记录选项
     )
+    LAUNCHERS = GIT_LAUNCHERS + (
+        (opencode_launcher.OpenCodeLauncher, DELETE_OPTION),  # OpenCode 没有整理 git 提交选项
+    )
+    DELETE_LAUNCHERS = tuple(cls for cls, next_option in LAUNCHERS if next_option == DELETE_OPTION)
 
     def choose(self, launcher, *labels):
         """依次选择 labels，最后返回主菜单；返回每轮菜单显示的选项"""
@@ -144,7 +151,7 @@ class ProjectMenuTest(unittest.TestCase):
                 action.assert_not_called()
 
     def test_delete_option_still_reaches_delete(self):
-        for launcher_class in (claude_launcher.ClaudeLauncher, grok_launcher.GrokLauncher):
+        for launcher_class in self.DELETE_LAUNCHERS:
             with self.subTest(launcher=launcher_class.__name__):
                 launcher = make_launcher(launcher_class)
                 menus = []
@@ -160,11 +167,29 @@ class ProjectMenuTest(unittest.TestCase):
                 action.assert_not_called()
 
     def test_git_option_still_reaches_git_organizer(self):
-        for launcher_class, _ in self.LAUNCHERS:
+        for launcher_class, _ in self.GIT_LAUNCHERS:
             with self.subTest(launcher=launcher_class.__name__):
                 launcher = make_launcher(launcher_class)
                 self.choose(launcher, "整理git提交作为学习材料")
                 launcher.git_organizer.run_commit_organizer.assert_called_once_with("D:/项目")
+
+    def test_opencode_session_options_run_expected_commands(self):
+        launcher = make_launcher(opencode_launcher.OpenCodeLauncher)
+        menus, _ = self.choose(launcher, "进入最近会话 (opencode -c)", "开始新会话 (opencode)")
+        self.assertNotIn("整理git提交作为学习材料", menus[0])
+        self.assertEqual(
+            launcher.execute_opencode_command.call_args_list,
+            [mock.call("D:/项目", "opencode -c"), mock.call("D:/项目", "opencode")])
+
+    def test_opencode_history_resumes_selected_session(self):
+        launcher = make_launcher(opencode_launcher.OpenCodeLauncher)
+        launcher.get_opencode_sessions.return_value = [
+            {"id": "ses_new", "title": "新会话", "updated": 2000},
+            {"id": "ses_old", "title": "旧会话", "updated": 1000},
+        ]
+        launcher.select_from_menu = lambda options, title: 1
+        launcher.show_history_sessions("D:/项目")
+        launcher.execute_opencode_command.assert_called_once_with("D:/项目", "opencode -s ses_old")
 
     def test_claude_pinned_sessions_keep_indexes_aligned(self):
         launcher = make_launcher(claude_launcher.ClaudeLauncher)
