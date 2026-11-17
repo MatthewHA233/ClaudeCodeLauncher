@@ -534,7 +534,9 @@ class RelayHandler(BaseHTTPRequestHandler):
 class SessionHTTPServer(ThreadingHTTPServer):
     # 关闭端口复用：Windows 下 SO_REUSEADDR 会让多个进程都 bind 成功，
     # 关掉后第二个实例 bind 失败 → 竞态兜底（安静退出）才可靠，保证全局单例。
-    allow_reuse_address = False
+    # macOS / Linux 的 SO_REUSEADDR 不允许两个进程同时监听同一地址，只放行 TIME_WAIT；
+    # 不开的话刚关掉的旧中继留下 TIME_WAIT，重启时 bind 失败，新中继会以 0 退出、launchd 不再拉起。
+    allow_reuse_address = os.name != "nt"
     daemon_threads = True
 
 
@@ -556,7 +558,7 @@ def _start_mdns_advertise(port):
 
     保持「纯标准库」：不引 zeroconf 依赖，改 subprocess 调系统工具——
     macOS 用内置 `dns-sd -R`，Linux 用 `avahi-publish-service`(若装了 avahi)。
-    返回 Popen(供退出时终止)；不支持/失败时返回 None，绝不影响中继主流程。
+    返回托管进程的 Popen(退出时关闭其 stdin 即结束广播)；不支持/失败时返回 None，绝不影响中继主流程。
     """
     import shutil
     import subprocess
@@ -572,8 +574,12 @@ def _start_mdns_advertise(port):
                     "os=linux", f"host={host}", f"mid={mid}"]
         else:
             return None  # 其它平台暂不广播(对端仍可手动填地址)
-        return subprocess.Popen(args, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        # 广播进程必须跟中继同生共死：中继被 SIGKILL / SIGTERM 时走不到 finally，
+        # 残留的广播会以同一 mid 指向死端口，对端可能连过去。这里用 sh 托管广播，
+        # 中继无论怎么退出，stdin 管道都会关闭，read 读到 EOF 就结束广播。
+        guard = '"$@" & child=$!; read -r _; kill "$child" 2>/dev/null'
+        return subprocess.Popen(["/bin/sh", "-c", guard, "sh", *args], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, stdin=subprocess.PIPE)
     except Exception:
         return None
 
@@ -623,7 +629,8 @@ def run(host='0.0.0.0', port=DEFAULT_PORT, idle_timeout=IDLE_TIMEOUT_SECONDS):
     finally:
         if advertiser is not None:
             try:
-                advertiser.terminate()
+                advertiser.stdin.close()  # 托管的 sh 读到 EOF 后结束广播进程
+                advertiser.wait(timeout=2)
             except Exception:
                 pass
         server.server_close()

@@ -2,8 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import json
+import os
+import signal
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
@@ -155,6 +161,81 @@ class RawProviderTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
+
+
+class SingletonBindTests(unittest.TestCase):
+    def test_second_relay_cannot_bind_same_port(self):
+        first = relay.SessionHTTPServer(("127.0.0.1", 0), relay.RelayHandler)
+        self.addCleanup(first.server_close)
+        with self.assertRaises(OSError):
+            relay.SessionHTTPServer(("127.0.0.1", first.server_address[1]), relay.RelayHandler)
+
+    @unittest.skipIf(os.name == "nt", "Windows 不开端口复用")
+    def test_restart_right_after_serving_requests(self):
+        """旧中继刚处理完请求就关闭，端口留着 TIME_WAIT，新中继仍要能 bind（launchd 重启场景）。"""
+        old = relay.SessionHTTPServer(("127.0.0.1", 0), relay.RelayHandler)
+        port = old.server_address[1]
+        thread = threading.Thread(target=old.serve_forever, daemon=True)
+        thread.start()
+        urlopen_direct(f"http://127.0.0.1:{port}/api/ping", timeout=3).read()
+        old.shutdown()
+        old.server_close()
+        thread.join(timeout=3)
+        relay.SessionHTTPServer(("127.0.0.1", port), relay.RelayHandler).server_close()
+
+
+@unittest.skipIf(os.name == "nt", "Windows 不做 mDNS 广播")
+class AdvertiserLifetimeTests(unittest.TestCase):
+    """中继无论怎么退出，广播都要跟着停：残留广播会以同一 mid 指向死端口，对端可能连过去。"""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        self.pidfile = base / "advertiser.pid"
+        bin_dir = base / "bin"
+        bin_dir.mkdir()
+        # 替身：记下 pid 后常驻，代替 dns-sd / avahi-publish-service，不真的广播
+        for name in ("dns-sd", "avahi-publish-service"):
+            fake = bin_dir / name
+            fake.write_text('#!/bin/sh\necho $$ > "$FAKE_PIDFILE"\nexec sleep 60\n', encoding="utf-8")
+            fake.chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "HOME": str(base), "FAKE_PIDFILE": str(self.pidfile)}
+
+    def start_relay(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        proc = subprocess.Popen([sys.executable, relay.__file__, str(port)], env=self.env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(proc.kill)
+        deadline = time.monotonic() + 10
+        while not (self.pidfile.exists() and self.pidfile.read_text().strip()):
+            if time.monotonic() > deadline:
+                self.fail("广播替身没有启动")
+            time.sleep(0.05)
+        return proc, int(self.pidfile.read_text())
+
+    def assert_gone(self, pid):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, signal.SIGKILL)
+        self.fail("中继退出后广播进程仍在")
+
+    def test_advertiser_stops_however_relay_exits(self):
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=sig.name):
+                self.pidfile.unlink(missing_ok=True)
+                proc, pid = self.start_relay()
+                proc.send_signal(sig)
+                proc.wait(timeout=5)
+                self.assert_gone(pid)
 
 
 if __name__ == "__main__":

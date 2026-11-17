@@ -38,13 +38,16 @@ Claude Usage Monitor 用 Rust 统一解析 + rusqlite 物化。
 **局域网发现（mDNS / Bonjour）**：`_start_mdns_advertise(port)` 启动时广播 `_claude-relay._tcp`，
 让对端 Claude Usage Monitor「添加来源」零配置发现本机（免手输 IP）。保持**纯标准库**：不引 zeroconf，
 改 subprocess 调系统工具——macOS 内置 `dns-sd -R`、Linux `avahi-publish-service`(若装了 avahi)；
-其它平台静默跳过(仍可手动填地址)。返回的 Popen 在 relay 退出时 `terminate()`。对端浏览端在 Claude Usage Monitor 的 `discovery.rs`(`mdns-sd` crate)。
+其它平台静默跳过(仍可手动填地址)。广播进程由一个 `sh` 托管，靠 stdin 管道与 relay 同生共死：
+relay 无论正常退出还是被 SIGKILL / SIGTERM，管道一关广播就停（曾因残留广播以同一 mid 指向死端口，导致对端连不上）。
+对端浏览端在 Claude Usage Monitor 的 `discovery.rs`(`mdns-sd` crate)。
 
 ## 自启：`session_api_autostart.py`
 
 `ensure_running()` 幂等拉起中继（已在跑则跳过、否则 detached 不弹窗启动），由
 `claude_launcher.py` / `codex_launcher.py` 进入主流程时调用。多个 ccrun 窗口同时启动时，
-靠中继端 `allow_reuse_address=False` 的 bind 失败兜底，保证全局单例。
+靠中继端 bind 失败兜底，保证全局单例：Windows 上 `allow_reuse_address=False`（否则多个进程都能 bind）；
+macOS / Linux 上为 True（不允许重复监听，只放行旧中继留下的 TIME_WAIT，否则重启时 bind 失败）。
 
 macOS 不再依赖启动器持续拉起：运行一次 `python3 install_macos_relay.py` 会安装
 `~/Library/LaunchAgents/com.matthew.claude-session-relay.plist`，登录后自动启动同一个 relay。
