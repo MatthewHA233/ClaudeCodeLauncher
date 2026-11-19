@@ -55,6 +55,24 @@ def _is_loaded():
     return _run_launchctl("print", f"{_domain()}/{LABEL}").returncode == 0
 
 
+def _wait_until(predicate, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return predicate()
+
+
+def _bootstrap(plist_path):
+    # bootout 返回时服务偶尔还在注销，此时 bootstrap 报「5: Input/output error」，稍等重试即可
+    for _ in range(20):
+        if _run_launchctl("bootstrap", _domain(), str(plist_path)).returncode == 0 or _is_loaded():
+            return
+        time.sleep(0.25)
+    _run_launchctl("bootstrap", _domain(), str(plist_path), check=True)
+
+
 def _plist_bytes(port):
     here = Path(__file__).resolve().parent
     logs = Path.home() / "Library" / "Logs"
@@ -97,12 +115,18 @@ def install(port=DEFAULT_PORT, restart=True):
     loaded = _is_loaded()
     if restart:
         _shutdown_old(port)
-        if loaded:
-            _run_launchctl("bootout", f"{_domain()}/{LABEL}")
-        _run_launchctl("bootstrap", _domain(), str(plist_path), check=True)
+        # 配置没变就不卸载重装，kickstart 直接用新代码重启；变了才 bootout + bootstrap 让 launchd 读新配置
+        if not loaded or old_bytes != new_bytes:
+            if loaded:
+                _run_launchctl("bootout", f"{_domain()}/{LABEL}")
+                _wait_until(lambda: not _is_loaded(), 10)
+            _bootstrap(plist_path)
         _run_launchctl("kickstart", "-k", f"{_domain()}/{LABEL}", check=True)
+        # launchctl 全部成功不代表中继起来了（曾因 bind 失败以 0 退出，launchd 不再拉起），要亲眼看到端口在监听
+        if not _wait_until(lambda: _is_port_open(port), 10):
+            raise RuntimeError(f"中继没有监听 {port} 端口，请查看 ~/Library/Logs/claude-session-relay*.log")
     elif not loaded and not _is_port_open(port):
-        _run_launchctl("bootstrap", _domain(), str(plist_path), check=True)
+        _bootstrap(plist_path)
     return True
 
 
@@ -130,7 +154,10 @@ def main():
         uninstall(args.port)
         print("macOS session relay LaunchAgent 已卸载")
     else:
-        install(args.port, restart=not args.no_restart)
+        try:
+            install(args.port, restart=not args.no_restart)
+        except (RuntimeError, subprocess.CalledProcessError) as e:
+            raise SystemExit(f"macOS session relay 启动失败：{e}")
         print(f"macOS session relay 已安装并监听 0.0.0.0:{args.port}")
 
 
