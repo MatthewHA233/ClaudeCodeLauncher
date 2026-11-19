@@ -163,6 +163,71 @@ class RawProviderTests(unittest.TestCase):
             thread.join(timeout=3)
 
 
+class RawSliceTests(unittest.TestCase):
+    """/raw/file 增量模式：offset 续传 + slim 去掉解析器用不到的 api-request* 请求日志。"""
+
+    USER = b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"hi"}}\n'
+    API = b'{"type":"api-request","params":{"safeguards":[{"big":"x"}]}}\n'
+    BLOB = b'{"type":"api-request-blob","hash":"h","message":{}}\n'
+    ASSISTANT = b'{"type":"assistant","message":{"content":[{"type":"text","text":"yo"}]}}\n'
+    PARTIAL = b'{"type":"assistant","mess'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.old_projects = relay.PROJECTS_DIR
+        self.addCleanup(setattr, relay, "PROJECTS_DIR", self.old_projects)
+        relay.PROJECTS_DIR = Path(self.temp.name) / "projects"
+        self.fp = relay.PROJECTS_DIR / "proj" / "s.jsonl"
+        self.fp.parent.mkdir(parents=True)
+        self.body = self.USER + self.API + self.BLOB + self.ASSISTANT + self.PARTIAL
+        self.fp.write_bytes(self.body)
+        self.complete_end = len(self.body) - len(self.PARTIAL)
+
+    def test_slim_full_read_drops_api_request_lines_and_trailing_partial_line(self):
+        start, end, size, data = relay._read_raw_slice(self.fp, 0, slim=True)
+        self.assertEqual((start, end, size), (0, self.complete_end, len(self.body)))
+        self.assertEqual(data, self.USER + self.ASSISTANT)
+
+    def test_offset_on_line_boundary_returns_only_the_tail(self):
+        offset = len(self.USER + self.API)
+        start, end, _, data = relay._read_raw_slice(self.fp, offset, slim=False)
+        self.assertEqual((start, end), (offset, self.complete_end))
+        self.assertEqual(data, self.BLOB + self.ASSISTANT)
+
+    def test_offset_at_end_returns_nothing_new(self):
+        start, end, _, data = relay._read_raw_slice(self.fp, self.complete_end, slim=True)
+        self.assertEqual((start, end, data), (self.complete_end, self.complete_end, b""))
+
+    def test_invalid_offset_restarts_from_beginning(self):
+        for bad in (3, len(self.body) + 10, -5):
+            start, end, _, data = relay._read_raw_slice(self.fp, bad, slim=True)
+            self.assertEqual((start, end), (0, self.complete_end), bad)
+            self.assertEqual(data, self.USER + self.ASSISTANT)
+
+    def test_endpoint_keeps_legacy_bytes_and_adds_range_headers_in_incremental_mode(self):
+        server = relay.SessionHTTPServer(("127.0.0.1", 0), relay.RelayHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}/raw/file?"
+            common = {"provider": "claude_code", "key": "proj/s.jsonl"}
+            with urlopen_direct(base + urlencode(common), timeout=3) as response:
+                self.assertEqual(response.read(), self.body)
+                self.assertIsNone(response.headers.get("X-Raw-End"))
+            offset = len(self.USER)
+            query = urlencode({**common, "offset": offset, "slim": 1})
+            with urlopen_direct(base + query, timeout=3) as response:
+                self.assertEqual(response.read(), self.ASSISTANT)
+                self.assertEqual(response.headers.get("X-Raw-Start"), str(offset))
+                self.assertEqual(response.headers.get("X-Raw-End"), str(self.complete_end))
+                self.assertEqual(response.headers.get("X-Raw-Size"), str(len(self.body)))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+
 class SingletonBindTests(unittest.TestCase):
     def test_second_relay_cannot_bind_same_port(self):
         first = relay.SessionHTTPServer(("127.0.0.1", 0), relay.RelayHandler)

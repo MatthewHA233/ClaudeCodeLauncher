@@ -12,8 +12,10 @@
   GET  /api/info           本机身份（hostname/os）
   GET  /raw/list?provider=claude_code|codex
                             列出对应 provider 的 .jsonl
-  GET  /raw/file?provider=...&key=...
-                            返回对应会话文件的原始字节（纯文本）
+  GET  /raw/file?provider=...&key=...[&offset=N][&slim=1]
+                            返回对应会话文件的原始字节（纯文本）；带 offset/slim 时进入增量模式：
+                            只回 offset 起的完整行，slim 去掉 api-request* 请求日志，
+                            响应头 X-Raw-Start / X-Raw-End / X-Raw-Size 标明覆盖的原始字节区间
   GET  /raw/image?provider=codex&key=...&path=...
                             仅返回该 rollout 实际引用的本机截图字节
   GET  /api/token_summary?since_days=N  本机 token 用量摘要(date×provider×model)，供跨机器汇总
@@ -38,7 +40,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 DEFAULT_PORT = 47800
 # 空闲多久没人访问就自动退出（秒）；0 = 常驻不退。
 # 设 0：本中继是「会话归档」的数据出口，别的机器随时可能来读，不该因本机没活动就退出
@@ -191,6 +193,39 @@ def _resolve_key(key, provider=CLAUDE_PROVIDER):
     if not fp_resolved.is_file():
         return None
     return fp_resolved
+
+
+# Claude Code 每次 API 请求都会往会话 JSONL 写 api-request / api-request-blob / api-request-shape 行；
+# 其中 params.safeguards 每次重写整段累积上下文，长会话里能占到文件的七成，而解析器只读 user/assistant 等行。
+# 这类行的 "type" 恒为首个键，按行首前缀判断即可，不用解析 JSON。
+_SLIM_DROP_LINE = re.compile(rb'^\{\s*"type"\s*:\s*"api-request')
+
+
+def _read_raw_slice(fp, offset, slim):
+    """增量读取会话文件：从 offset 起只返回完整行（不含仍在写的半行）。
+
+    offset 必须落在行首（前一字节是换行）且不超过文件大小，否则从 0 重来。
+    返回 (start, end, size, data)：data 覆盖原始字节区间 [start, end)，客户端下次用 end 续传；
+    slim=True 时 data 去掉 api-request* 行（区间仍按原始字节计）。"""
+    with open(fp, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        start = offset if 0 < offset <= size else 0
+        if start:
+            f.seek(start - 1)
+            if f.read(1) != b'\n':
+                start = 0
+        f.seek(start)
+        data = f.read(size - start)
+    cut = data.rfind(b'\n')
+    if cut < 0:
+        return start, start, size, b''
+    data = data[:cut + 1]
+    end = start + cut + 1
+    if slim:
+        kept = [line for line in data.split(b'\n')[:-1] if not _SLIM_DROP_LINE.match(line)]
+        data = b'\n'.join(kept) + b'\n' if kept else b''
+    return start, end, size, data
 
 
 def _decode_js_string_literal(source):
@@ -348,11 +383,13 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _raw(self, data, status=200):
+    def _raw(self, data, status=200, extra_headers=None):
         self.send_response(status)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Content-Length', str(len(data)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -451,6 +488,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     'os': platform.system(),
                     'platform': sys.platform,
                     'raw_providers': list(RAW_PROVIDERS),
+                    'raw_features': ['offset', 'slim'],
                 })
             elif path in ('/raw/list', '/raw'):
                 qs = parse_qs(parsed.query)
@@ -472,8 +510,22 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not fp:
                     self._json({'ok': False, 'error': 'invalid key'}, 400)
                     return
-                with open(fp, 'rb') as f:
-                    self._raw(f.read())
+                if 'offset' not in qs and 'slim' not in qs:
+                    # 旧客户端：原样返回整个文件（含末尾半行），字节级保持兼容
+                    with open(fp, 'rb') as f:
+                        self._raw(f.read())
+                    return
+                try:
+                    offset = int(qs.get('offset', ['0'])[0] or 0)
+                except ValueError:
+                    offset = 0
+                slim = (qs.get('slim', ['0'])[0] or '0') not in ('0', 'false', '')
+                start, end, size, data = _read_raw_slice(fp, offset, slim)
+                self._raw(data, extra_headers={
+                    'X-Raw-Start': str(start),
+                    'X-Raw-End': str(end),
+                    'X-Raw-Size': str(size),
+                })
             elif path == '/raw/image':
                 qs = parse_qs(parsed.query)
                 provider = (qs.get('provider', [''])[0] or '').strip()
